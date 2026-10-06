@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 # std 必须显式开：rc.13 里 commit_from_file / Session::builder 都是 #[cfg(feature="std")]
 # 不开 download-binaries：改用 CI 上自建的 ONNX Runtime（预编译版链 glibc 2.39，本机 2.35 跑不了）
-ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tls-native"] }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tls-native", "copy-dylibs"] }
 ndarray = { version = "0.17", features = ["std"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 image = "0.25"

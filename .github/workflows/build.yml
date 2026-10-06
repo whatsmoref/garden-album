@@ -47,12 +47,16 @@ jobs:
         run: cargo build --release
         env:
           ORT_LIB_LOCATION: /opt/ort-install/lib
+          # 只有 .so，没有 .a；必须让 ort-sys 走动态链接分支
+          ORT_PREFER_DYNAMIC_LINK: "1"
+          LD_LIBRARY_PATH: /opt/ort-install/lib
 
       - name: Package
         run: |
           set -euo pipefail
           mkdir -p dist
           cp target/release/album dist/album
+          cp /opt/ort-install/lib/libonnxruntime.so* dist/
           # 静态链入的 ORT 不需要额外 .so；只记录依赖与 glibc 要求便于排查
           ldd dist/album | awk '/=> \//{print $3}' | sort -u > dist/ldd.txt || true
           echo "--- max GLIBC symbol version ---"
@@ -108,4 +112,5 @@ jobs:
         run: cargo test --release
         env:
           ORT_LIB_LOCATION: /opt/ort-install/lib
+          ORT_PREFER_DYNAMIC_LINK: "1"
           LD_LIBRARY_PATH: /opt/ort-install/lib
