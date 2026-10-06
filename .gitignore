@@ -1,0 +1,4 @@
+/target
+*.npy
+*.npz
+/data/

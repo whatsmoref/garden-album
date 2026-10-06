@@ -1,0 +1,45 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/album dist/album
+          # ort 的 copy-dylibs 会把 libonnxruntime.so 放进 target/release/
+          find target/release -name 'libonnxruntime*.so*' -exec cp -P {} dist/ \;
+          # 把运行时依赖一并打进去，便于本地直接跑
+          ldd dist/album | awk '/=> \//{print $3}' | sort -u > dist/ldd.txt || true
+          while read -r lib; do [ -f "$lib" ] && cp -n -P "$lib" dist/; done < dist/ldd.txt
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: album-linux-x86_64
+          path: dist/
+          retention-days: 30
+
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --release --locked

@@ -1,0 +1,35 @@
+[package]
+name = "album-rs"
+version = "0.1.0"
+edition = "2021"
+description = "本地相册语义检索系统（Rust 实现）"
+
+[[bin]]
+name = "album"
+path = "src/main.rs"
+
+[dependencies]
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
+ndarray = "0.16"
+rusqlite = { version = "0.32", features = ["bundled"] }
+image = "0.25"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+jieba-rs = "0.7"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+once_cell = "1"
+num_cpus = "1"
+regex = "1"
+chrono = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
