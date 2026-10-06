@@ -16,7 +16,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Build release
-        run: cargo build --release --locked
+        run: cargo build --release
       - name: Package
         run: |
           mkdir -p dist
@@ -42,4 +42,4 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
-        run: cargo test --release --locked
+        run: cargo test --release
