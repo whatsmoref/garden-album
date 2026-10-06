@@ -8,8 +8,8 @@ on:
 jobs:
   linux:
     # 用 22.04 + 自建 ORT：预编译的 libonnxruntime.so 链的是 glibc 2.39，
-    # 在 22.04（2.35）跑不起来，且换新 glibc 的 ld.so 会引出 __tunable_is_initialized 冲突。
-    # 正确做法是在 22.04 上从源码编译 ONNX Runtime（API 1.17+，静态链进二进制）。
+    # 本机/22.04 是 glibc 2.35，直接跑会报 GLIBC_2.38 not found。
+    # 换 ubuntu-24.04 编译后二进制同样在本机跑不起来，所以必须在 22.04 上从源码编 ORT。
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -18,17 +18,19 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+
       - name: Cache ONNX Runtime build
         id: ort-cache
         uses: actions/cache@v4
         with:
-          path: /tmp/ort-install
-          key: ort-1.22.0-x64-linux-22.04
-      - name: Build ONNX Runtime from source (glibc 2.35 compatible)
+          path: /opt/ort-install
+          key: ort-1.22.0-x64-linux-glibc235
+
+      - name: Build ONNX Runtime from source
         if: steps.ort-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          # eigen3 的 CMake FetchContent 会被网络卡住，直接用 apt 的
+          # eigen3 的 CMake FetchContent 在 CI 上会网络失败，直接用 apt 的
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build libeigen3-dev
           cd /tmp
@@ -38,29 +40,45 @@ jobs:
             --update --compile_no_warning_as_error \
             --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
                                        onnxruntime_USE_OPENMP=OFF \
-                                       ORT_LIB_LOCATION=/tmp/ort-install/lib
-          mkdir -p /tmp/ort-install
-          cp -r build/Linux/Release/onnxruntime /tmp/ort-install/
-          cp include /tmp/ort-install/ 2>/dev/null || true
-      - name: Point ort at the local ORT
+                                       ORT_LIB_LOCATION=/opt/ort-install/lib
+          mkdir -p /opt/ort-install/lib
+          cp build/Linux/Release/libonnxruntime.so* /opt/ort-install/lib/
+          cp -r include /opt/ort-install/
+          ldconfig
+
+      - name: Export ORT location
         run: |
-          echo "ORT_LIB_LOCATION=/tmp/ort-install/lib" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=/tmp/ort-install/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-          echo "ORT_DYLIB_PATH=/tmp/ort-install/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          echo "ORT_LIB_LOCATION=/opt/ort-install/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/opt/ort-install/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
       - name: Build release
         run: cargo build --release
         env:
-          ORT_LIB_LOCATION: /tmp/ort-install/lib
+          ORT_LIB_LOCATION: /opt/ort-install/lib
+
       - name: Package
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp target/release/album dist/album
-          # ort 的 copy-dylibs 会把 libonnxruntime.so 放进 target/release/
-          # 静态链入的 ORT 不需要额外 .so；只记录依赖便于排查
+          # 静态链入的 ORT 不需要额外 .so；只记录依赖与 glibc 要求便于排查
           ldd dist/album | awk '/=> \//{print $3}' | sort -u > dist/ldd.txt || true
-          echo "--- 需要 GLIBC_2.xx ---"
-          objdump -T dist/album | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
+          echo "--- max GLIBC symbol version ---"
+          objdump -T dist/album | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1 | tee dist/glibc.txt
+          # 本地 glibc 2.35，不能高于它
+          MAX=$(cat dist/glibc.txt | tr -d 'GLIBC_')
+          python3 - <<'EOF'
+          import sys
+          v = open('dist/glibc.txt').read().strip().replace('GLIBC_','')
+          parts = [int(x) for x in v.split('.')]
+          print('binary needs GLIBC', v)
+          if parts >= [2, 36]:
+              print('ERROR: 需要 glibc >= 2.36，本机 2.35 跑不了')
+              sys.exit(1)
+          print('OK: 兼容本机 glibc 2.35')
+          EOF
           ls -la dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: album-linux-x86_64
@@ -75,19 +93,33 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
+
       - name: Install ONNX Runtime
         run: |
+          set -euo pipefail
+          # 测试只需要能链接，不需要完整构建参数
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libonnxruntime-dev 2>/dev/null || {
-            echo "apt 没有 libonnxruntime-dev，改用 python wheel 里的 .so"
-            pip download onnxruntime==1.22.0 -d /tmp/ortwhl --no-deps -q
-            mkdir -p /opt/ort && cd /tmp/ortwhl && python3 -c "
-import zipfile,glob,os
-w=glob.glob('*.whl')[0]
-zipfile.ZipFile(w).extractall('/opt/ort')
-"
-            find /opt/ort -name 'libonnxruntime.so*' -exec cp -P {} /usr/local/lib/ \;
+          sudo apt-get install -y -qq libonnxruntime-dev || {
+            echo "fallback: 从 python wheel 取 .so"
+            pip download 'onnxruntime==1.22.0' -d /tmp/ortwhl --no-deps -q
+            mkdir -p /opt/ort-install/lib
+            python3 - <<'EOF'
+          import zipfile, glob
+          w = glob.glob('/tmp/ortwhl/*.whl')[0]
+          zipfile.ZipFile(w).extractall('/opt/ortwhl/x')
+          for f in glob.glob('/opt/ortwhl/x/**/*.so*', recursive=True):
+              if 'onnxruntime' in f:
+                  import shutil, os
+                  shutil.copy(f, '/opt/ort-install/lib/')
+          print(os.listdir('/opt/ort-install/lib'))
+          EOF
             ldconfig
           }
+          sudo cp -n /usr/local/lib/libonnxruntime.so* /usr/local/lib/ 2>/dev/null || true
+          sudo ldconfig
+
       - name: cargo test
         run: cargo test --release
+        env:
+          ORT_LIB_LOCATION: /opt/ort-install/lib
+          LD_LIBRARY_PATH: /opt/ort-install/lib
