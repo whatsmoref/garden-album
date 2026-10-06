@@ -47,7 +47,10 @@ impl Tokenizer {
         let p = C::mobileclip_tok();
         let tok = tokenizers::Tokenizer::from_file(&p)
             .map_err(|e| anyhow::anyhow!("加载 tokenizer 失败 {}: {e}", p.display()))?;
-        let ids = tok.encode("test", false).map(|e| e.get_ids().to_vec()).unwrap_or_default();
+        let ids: Vec<i64> = tok
+            .encode("test", false)
+            .map(|e| e.get_ids().iter().map(|x| *x as i64).collect())
+            .unwrap_or_default();
         let vs = tok.get_vocab_size(false) as i64;
         let auto = ids.first().copied() == Some(C::CLIP_BOS)
             && ids.last().copied() == Some(C::CLIP_EOS);
