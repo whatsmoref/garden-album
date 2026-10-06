@@ -262,30 +262,28 @@ impl Scrfd {
         let outs = sess.run(ort::inputs![t])?;
         // 本机 scrfd_10g.onnx 输出无 batch 维：scores(N,1)/bbox(N,4)/kps(N,10)
         // 部分导出带 (1,N,C)，统一按 shape 压成二维（rows() 取行首）
-        let score = rows_of(outs[0].try_extract_tensor::<f32>()?, 1);
-        let bbox = rows_of(outs[self.fmc].try_extract_tensor::<f32>()?, 4);
-        let kps = rows_of(outs[self.fmc * 2].try_extract_tensor::<f32>()?, 10);
+        let (score, n) = rows_of(outs[0].try_extract_tensor::<f32>()?, 1);
+        let (bbox, _) = rows_of(outs[self.fmc].try_extract_tensor::<f32>()?, 4);
+        let (kps, _) = rows_of(outs[self.fmc * 2].try_extract_tensor::<f32>()?, 10);
 
         let mut boxes_all: Vec<[f32; 4]> = Vec::new();
         let mut kps_all: Vec<[f32; 10]> = Vec::new();
         let mut scores_all: Vec<f32> = Vec::new();
         for (i, stride) in self.strides.iter().enumerate() {
-            let n = score.len();
             let side = 640 / stride;
             let na = ((n / (side * side).max(1)).max(1)) as f32;
-            let srow = &score[i];
-            let brow = &bbox[i];
-            let krow = &kps[i];
-            for (j, s) in srow.iter().enumerate() {
-                if *s < thresh {
+            for j in 0..n {
+                let sv = score[j];
+                if sv < thresh {
                     continue;
                 }
                 let anchor = (j as f32 / na) as usize;
                 let stride_f = *stride as f32;
                 let cx = (anchor % side) as f32 * stride_f;
                 let cy = (anchor / side) as f32 * stride_f;
-                let d: &[f32] = brow[j].as_slice();
-                let k: &[f32] = krow[j].as_slice();
+                // srow/brow/krow 已是扁平切片，直接按行偏移取
+                let d: &[f32] = &bbox[j * 4..j * 4 + 4];
+                let k: &[f32] = &kps[j * 10..j * 10 + 10];
                 // bbox/kps 导出时已除以 stride，乘回原图尺度
                 boxes_all.push([
                     cx - d[0] * stride_f,
@@ -299,7 +297,7 @@ impl Scrfd {
                     kv[2 * p + 1] = k[2 * p + 1] * stride_f + cy;
                 }
                 kps_all.push(kv);
-                scores_all.push(*s);
+                scores_all.push(sv);
             }
         }
         if boxes_all.is_empty() {
@@ -504,7 +502,8 @@ fn i64_tensor(shape: &[usize], data: Vec<i64>) -> Result<ort::value::Tensor<i64>
 }
 
 /// 把 (Shape, &[f32]) 按行切开；(1,N,C) 与 (N,C) 两种导出都能处理
-fn rows_of(sd: (&ort::value::Shape, &[f32]), cols: usize) -> Vec<Vec<f32>> {
+/// (1,N,C) / (N,C) 两种导出统一成扁平 &[f32] + 行数 C
+fn rows_of(sd: (&ort::value::Shape, &[f32]), cols: usize) -> (Vec<f32>, usize) {
     let (shape, data) = sd;
     let n = if shape.len() == 3 {
         shape[1] as usize * shape[2] as usize / cols
@@ -513,7 +512,7 @@ fn rows_of(sd: (&ort::value::Shape, &[f32]), cols: usize) -> Vec<Vec<f32>> {
     } else {
         0
     };
-    (0..n).map(|i| data[i * cols..(i + 1) * cols].to_vec()).collect()
+    (data[..(n * cols).min(data.len())].to_vec(), n)
 }
 
 /// 从 (Shape, &[f32]) 取前 dim 个元素
