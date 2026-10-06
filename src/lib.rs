@@ -1,4 +1,5 @@
 //! 本地相册语义检索系统 —— Rust 重写版
+#![allow(dead_code)]
 //!
 //! 分层：models/metadata/visual/face → events/ocr/quality → parser/search/albums → indexer
 
