@@ -9,7 +9,8 @@ name = "album"
 path = "src/main.rs"
 
 [dependencies]
-ort = { version = "2.0.0-rc.13", default-features = false, features = ["ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
+# std 必须显式开：rc.13 里 commit_from_file / Session::builder 都是 #[cfg(feature="std")]
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
 ndarray = { version = "0.17", features = ["std"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 image = "0.25"
