@@ -50,12 +50,12 @@ pub fn nearest_city(lat: f64, lon: f64) -> String {
 
 /// 参与事件切分的最小信息
 #[derive(Clone)]
-struct Seg<'a> {
+struct Seg {
     id: i64,
     dt: NaiveDateTime,
     gps: Option<(f64, f64)>,
-    device: &'a str,
-    phash: &'a str,
+    device: String,
+    phash: String,
 }
 
 /// 纯内存/SQL，万张秒级
@@ -73,8 +73,8 @@ pub fn recompute(db: &DB) -> Result<()> {
                 (Some(a), Some(b)) => Some((a, b)),
                 _ => None,
             },
-            device: p.device.as_deref().unwrap_or(""),
-            phash: p.phash.as_deref().unwrap_or(""),
+            device: p.device.clone().unwrap_or_default(),
+            phash: p.phash.clone().unwrap_or_default(),
         });
     }
     db.clear_events()?;
@@ -100,7 +100,7 @@ pub fn recompute(db: &DB) -> Result<()> {
         };
         let tagc = tag_histogram(db, &ids);
         let title = make_title(g[0].dt, &city, &tagc);
-        let mut devices: Vec<&str> = g.iter().map(|s| s.device).filter(|s| !s.is_empty()).collect();
+        let mut devices: Vec<&str> = g.iter().map(|s| s.device.as_str()).filter(|s| !s.is_empty()).collect();
         devices.sort_unstable();
         devices.dedup();
         let row = EventRow {
@@ -186,8 +186,12 @@ fn merge_cross_device(segs: &[Seg], persons: &HashMap<i64, HashSet<i64>>) -> Vec
                 continue; // 时间不重叠
             }
             let mut devs: HashSet<&str> = HashSet::new();
-            devs.extend(groups[i].iter().map(|k| segs[*k].device).filter(|s| !s.is_empty()));
-            devs.extend(groups[j].iter().map(|k| segs[*k].device).filter(|s| !s.is_empty()));
+            for k in groups[i].iter().chain(groups[j].iter()) {
+                let d = segs[*k].device.as_str();
+                if !d.is_empty() {
+                    devs.insert(d);
+                }
+            }
             if devs.len() < 2 {
                 continue; // 无跨设备
             }
@@ -206,13 +210,13 @@ fn merge_cross_device(segs: &[Seg], persons: &HashMap<i64, HashSet<i64>>) -> Vec
             let ha: Vec<&str> = groups[i]
                 .iter()
                 .take(200)
-                .map(|k| segs[*k].phash)
+                .map(|k| segs[*k].phash.as_str())
                 .filter(|s| !s.is_empty())
                 .collect();
             let hb: Vec<&str> = groups[j]
                 .iter()
                 .take(200)
-                .map(|k| segs[*k].phash)
+                .map(|k| segs[*k].phash.as_str())
                 .filter(|s| !s.is_empty())
                 .collect();
             if ha.iter().any(|a| hb.iter().any(|b| phash_hamming(a, b) <= C::MERGE_PHASH_HAMMING)) {

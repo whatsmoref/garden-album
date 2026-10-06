@@ -8,6 +8,7 @@ use image::ImageReader;
 use std::path::Path;
 
 use crate::db::PhotoMeta;
+use crate::exif;
 
 /// 高速解码：返回 RGB u8 的 HWC 缓冲（不含 stride 填充）
 pub fn load_image_rgb(path: &Path, max_side: u32) -> Result<(Vec<u8>, u32, u32)> {
@@ -46,122 +47,36 @@ pub fn extract_metadata(path: &Path) -> Result<PhotoMeta> {
         is_screenshot: 0,
         phash: None,
     };
-    let mut dt: Option<String> = None;
     let mut has_cam = false;
-    let mut make = String::new();
-    let mut model = String::new();
-    let mut lat: Option<f64> = None;
-    let mut lon: Option<f64> = None;
-
-    if let Ok(r) = ImageReader::open(path).and_then(|x| x.with_guessed_format()) {
-        if let Ok(exif) = r.exif() {
-            let f = exif.get_field(image::metadata::Tag::Exif, image::metadata::ExifTag::DateTimeOriginal);
-            if let Some(v) = f {
-                dt = Some(v.display_value().to_string().with_unit("").trim().to_string());
-            }
-            if let Some(v) = exif.get_field(
-                image::metadata::Tag::Exif,
-                image::metadata::ExifTag::DateTimeDigitized,
-            ) {
-                if dt.is_none() {
-                    dt = Some(v.display_value().to_string().trim().to_string());
-                }
-            }
-            if let Some(v) = exif.get_field(
-                image::metadata::Tag::Exif,
-                image::metadata::ExifTag::DateTime,
-            ) {
-                if dt.is_none() {
-                    dt = Some(v.display_value().to_string().trim().to_string());
-                }
-            }
-            make = exif
-                .get_field(image::metadata::Tag::TIFF, image::metadata::TiffTag::Make)
-                .map(|v| v.display_value().to_string().trim().to_string())
-                .unwrap_or_default();
-            model = exif
-                .get_field(image::metadata::Tag::TIFF, image::metadata::TiffTag::Model)
-                .map(|v| v.display_value().to_string().trim().to_string())
-                .unwrap_or_default();
-            if let (Some(a), Some(b)) = (
-                exif.get_field(image::metadata::Tag::GPS, image::metadata::GpsTag::GPSLatitude),
-                exif.get_field(image::metadata::Tag::GPS, image::metadata::GpsTag::GPSLatitudeRef),
-            ) {
-                lat = dms_to_deg(&a.display_value().to_string(), &b.display_value().to_string());
-            }
-            if let (Some(a), Some(b)) = (
-                exif.get_field(image::metadata::Tag::GPS, image::metadata::GpsTag::GPSLongitude),
-                exif.get_field(image::metadata::Tag::GPS, image::metadata::GpsTag::GPSLongitudeRef),
-            ) {
-                lon = dms_to_deg(&a.display_value().to_string(), &b.display_value().to_string());
-            }
-            has_cam = dt.is_some() && !make.is_empty();
-        }
+    // EXIF 缺失（JPEG 无 EXIF、WebP、HEIC）时不算错误，退到 mtime
+    if let Ok(e) = exif::read(path) {
+        let device = format!("{} {}", e.make.clone().unwrap_or_default(), e.model.clone().unwrap_or_default())
+            .trim()
+            .to_string();
+        out.device = if device.is_empty() { None } else { Some(device) };
+        out.gps_lat = e.gps_lat;
+        out.gps_lon = e.gps_lon;
+        has_cam = e.from_camera();
+        out.taken_at = e.best_datetime().map(exif::normalize_dt).filter(|s| !s.is_empty());
     }
     if let Ok((w, h)) = probe_size(path) {
         out.width = w as i64;
         out.height = h as i64;
     }
-    out.device = {
-        let d = format!("{make} {model}").trim().to_string();
-        if d.is_empty() {
-            None
-        } else {
-            Some(d)
-        }
-    };
-    out.gps_lat = lat;
-    out.gps_lon = lon;
-
-    // 归一化成 "%Y-%m-%d %H:%M:%S"
-    out.taken_at = dt
-        .as_deref()
-        .map(normalize_dt)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::fs::metadata(path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(|t| {
-                    let dt: chrono::DateTime<chrono::Local> = t.into();
-                    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                })
-        });
-
+    if out.taken_at.is_none() {
+        out.taken_at = std::fs::metadata(path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(|t| {
+                let dt: chrono::DateTime<chrono::Local> = t.into();
+                dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            });
+    }
     if let Ok((rgb, w, h)) = load_image_rgb(path, 0) {
         out.phash = Some(phash(&rgb, w, h));
     }
     out.is_screenshot = is_screenshot(path, out.width, out.height, has_cam);
     Ok(out)
-}
-
-/// EXIF 的 "2024:07:13 09:54:00" → "2024-07-13 09:54:00"
-fn normalize_dt(s: &str) -> String {
-    let t = s.trim().trim_end_matches('\0').trim();
-    if t.len() == 19 && t.as_bytes()[4] == b':' && t.as_bytes()[7] == b':' {
-        format!("{}-{}-{} {}", &t[0..4], &t[5..7], &t[8..10], &t[11..19])
-    } else {
-        t.to_string()
-    }
-}
-
-/// "51° 30' 26.4\"" + "N" → 度
-fn dms_to_deg(v: &str, refn: &str) -> Option<f64> {
-    let nums: Vec<f64> = v
-        .split(|c: char| !c.is_ascii_digit() && c != '.')
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<f64>().ok())
-        .collect();
-    if nums.is_empty() {
-        return None;
-    }
-    let d = nums[0] + nums.get(1).copied().unwrap_or(0.0) / 60.0 + nums.get(2).copied().unwrap_or(0.0) / 3600.0;
-    let d = if refn.trim().eq_ignore_ascii_case("S") || refn.trim().eq_ignore_ascii_case("W") {
-        -d
-    } else {
-        d
-    };
-    Some((d * 1e6).round() / 1e6)
 }
 
 /// 截图启发式：文件名黑名单 → 相机 Make 判定 → 屏幕比例

@@ -6,6 +6,7 @@ pub mod albums;
 pub mod config;
 pub mod db;
 pub mod events;
+pub mod exif;
 pub mod face;
 pub mod indexer;
 pub mod metadata;

@@ -23,6 +23,18 @@ use crate::quality;
 use crate::visual::VisualAnalyzer;
 use crate::{events, tags_of_doc};
 
+/// 阶段 1（解码 + CLIP + NIMA）的产物；无副作用所以能并行
+struct PreResult {
+    meta: crate::db::PhotoMeta,
+    vec: Vec<f32>,
+    tags: Vec<(String, f32)>,
+    quality: (f64, f64, f64, f64),
+    rgb: Vec<u8>,
+    w: usize,
+    h: usize,
+    stem: String,
+}
+
 pub struct Indexer {
     pub db: DB,
     pub hub: Arc<Hub>,
@@ -144,18 +156,6 @@ impl Indexer {
             self.db.commit()?;
         }
         Ok(done)
-    }
-
-    /// 阶段 1 的产物
-    struct PreResult {
-        meta: crate::db::PhotoMeta,
-        vec: Vec<f32>,
-        tags: Vec<(String, f32)>,
-        quality: (f64, f64, f64, f64),
-        rgb: Vec<u8>,
-        w: usize,
-        h: usize,
-        stem: String,
     }
 
     fn prepare(&self, path: &Path) -> Result<Option<PreResult>> {
