@@ -7,7 +7,6 @@
 use anyhow::Result;
 use std::sync::Arc;
 
-use crate::config as C;
 use crate::metadata::load_image_rgb;
 use crate::models::{resize_rgb, Hub, Interp};
 use crate::vocab::DOC_TAGS;

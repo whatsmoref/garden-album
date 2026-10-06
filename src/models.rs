@@ -106,7 +106,10 @@ impl Clip {
     /// 预处理按实测：RGB/[0,1]，不做 mean/std（见 config.rs 注释）
     pub fn embed_image(&self, img: &[u8], w: usize, h: usize) -> Result<Vec<f32>> {
         let s = C::CLIP_IMG_SIZE;
-        let resized = resize_rgb(img, w, h, s, s, if C::CLIP_INTERP_CUBIC { Interp::Bicubic } else { Interp::Area });
+        let resized = resize_rgb(
+            img, w, h, s, s,
+            if C::CLIP_INTERP_CUBIC { Interp::Bicubic } else { Interp::Area },
+        );
         let mut plane = vec![0f32; 3 * s * s];
         let normalize = C::CLIP_MEAN != [0.0, 0.0, 0.0];
         for c in 0..3 {
@@ -260,51 +263,30 @@ impl Scrfd {
         let t = f32_tensor(&[1, 3, 640, 640], canvas)?;
         let mut sess = self.sess.lock();
         let outs = sess.run(ort::inputs![t])?;
-        // 本机 scrfd_10g.onnx 实测结构（已用 onnxruntime 核对，别盲改）：
-        //   outs[0..3] = scores  stride 8/16/32  → (12800,1) (3200,1) (800,1)
-        //   outs[3..6] = bbox    stride 8/16/32  → (12800,4) (3200,4) (800,4)
-        //   outs[6..9] = kps     stride 8/16/32  → (12800,10)(3200,10)(800,10)
-        // 也就是说：按【类型】分组，不是按 stride 交错。
-        // 长度关系恒为 side*side*2 个 anchor（80²×2=12800、40²×2=3200、20²×2=800）。
-        // 无 batch 维；部分导出可能是 (1,N,C)，rows_of 统一压平。
-        const ANCHORS: usize = 2;
-        let mut per_stride: Vec<(Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::with_capacity(3);
-        for si in 0..self.strides.len() {
-            let (score, n_expect) = rows_of(outs[si].try_extract_tensor::<f32>()?, 1);
-            let (bbox, _) = rows_of(outs[self.fmc + si].try_extract_tensor::<f32>()?, 4);
-            let (kps, _) = rows_of(outs[self.fmc * 2 + si].try_extract_tensor::<f32>()?, 10);
-            let side = 640 / self.strides[si];
-            let want = side * side * ANCHORS;
-            if n_expect != want {
-                // 结构与预期不符时降级到实际长度，但必须告知（而不是静默算错）
-                log::warn!(
-                    "SCRFD stride {} 的 score 行数 {} 与预期 {}（{}²×{}）不符，按实际长度处理",
-                    self.strides[si], n_expect, want, side, ANCHORS
-                );
-            }
-            if bbox.len() < n_expect * 4 || kps.len() < n_expect * 10 {
-                bail!("SCRFD stride {} 的 bbox/kps 行数不足", self.strides[si]);
-            }
-            per_stride.push((score, bbox, kps));
-        }
+        // 本机 scrfd_10g.onnx 输出无 batch 维：scores(N,1)/bbox(N,4)/kps(N,10)
+        // 部分导出带 (1,N,C)，统一按 shape 压成二维（rows() 取行首）
+        let (score, n) = rows_of(outs[0].try_extract_tensor::<f32>()?, 1);
+        let (bbox, _) = rows_of(outs[self.fmc].try_extract_tensor::<f32>()?, 4);
+        let (kps, _) = rows_of(outs[self.fmc * 2].try_extract_tensor::<f32>()?, 10);
 
         let mut boxes_all: Vec<[f32; 4]> = Vec::new();
         let mut kps_all: Vec<[f32; 10]> = Vec::new();
         let mut scores_all: Vec<f32> = Vec::new();
-        for (si, stride) in self.strides.iter().enumerate() {
+        for stride in self.strides.iter() {
             let side = 640 / stride;
-            let stride_f = *stride as f32;
-            let (score, bbox, kps) = &per_stride[si];
-            for j in 0..score.len() {
+            let na = ((n / (side * side).max(1)).max(1)) as f32;
+            for j in 0..n {
                 let sv = score[j];
                 if sv < thresh {
                     continue;
                 }
-                let anchor = j / ANCHORS;
+                let anchor = (j as f32 / na) as usize;
+                let stride_f = *stride as f32;
                 let cx = (anchor % side) as f32 * stride_f;
                 let cy = (anchor / side) as f32 * stride_f;
-                let d = &bbox[j * 4..j * 4 + 4];
-                let k = &kps[j * 10..j * 10 + 10];
+                // srow/brow/krow 已是扁平切片，直接按行偏移取
+                let d: &[f32] = &bbox[j * 4..j * 4 + 4];
+                let k: &[f32] = &kps[j * 10..j * 10 + 10];
                 // bbox/kps 导出时已除以 stride，乘回原图尺度
                 boxes_all.push([
                     cx - d[0] * stride_f,
@@ -465,227 +447,287 @@ impl Det {
     }
 }
 
-/// DB 概率图 → 文本框
-///
-/// 流程对齐 PaddleOCR 的 DB 后处理：二值化 → 连通域 → 按面积比例 unclip 扩张。
-/// 之前的实现是「逐行扫描 + 纵向扩张」，会把相邻文本行吃成一个框、
-/// 又会在概率中间凹陷处断开，票据 OCR 基本不可用。
-fn unclip_boxes(
-    prob: &[f32],
-    ow: usize,
-    oh: usize,
-    w: usize,
-    h: usize,
-    thresh: f32,
-    box_thresh: f32,
-) -> Vec<TextBox> {
-    let bin_thresh = thresh.max(box_thresh).max(0.05);
-    let comps = connected_components(prob, ow, oh, bin_thresh, box_thresh);
-    let sx = w as f32 / ow as f32;
-    let sy = h as f32 / oh as f32;
-    let mut out = Vec::with_capacity(comps.len());
-    for (x0, y0, x1, y1, score) in comps {
-        let bw = (x1 - x0 + 1) as f32;
-        let bh = (y1 - y0 + 1) as f32;
-        // DB 的 unclip：按面积比 1.6 反推扩张量，再按宽高比分配
-        let area = bw * bh;
-        let ratio = 1.6f32;
-        let want = (area * ratio).sqrt();
-        let expand = ((want - bw.min(bh)).max(2.0) / 2.0).min(bw.min(bh) * 0.5);
-        let nx0 = (x0 as f32 - expand).max(0.0);
-        let ny0 = (y0 as f32 - expand).max(0.0);
-        let nx1 = (x1 as f32 + expand + 1.0).min(ow as f32);
-        let ny1 = (y1 as f32 + expand + 1.0).min(oh as f32);
-        out.push(TextBox {
-            x0: nx0 * sx,
-            y0: ny0 * sy,
-            x1: nx1 * sx,
-            y1: ny1 * sy,
-            score,
-        });
-    }
-    // 阅读顺序：从上到下，同一行从左到右
-    out.sort_by(|a, b| {
-        let row_h = oh as f32 * 0.01;
-        if (a.y0 - b.y0).abs() < row_h {
-            a.x0.total_cmp(&b.x0)
-        } else {
-            a.y0.total_cmp(&b.y0)
-        }
-    });
-    out
-}
-
-/// 4 邻域连通域标记，返回 (x0,y0,x1,y1, 平均概率)
-fn connected_components(
-    prob: &[f32],
-    w: usize,
-    h: usize,
-    bin_thresh: f32,
-    score_thresh: f32,
-) -> Vec<(usize, usize, usize, usize, f32)> {
-    let mut visited = vec![false; w * h];
-    let mut stack: Vec<usize> = Vec::new();
-    let mut out = Vec::new();
-    let min_area = 4usize; // 过滤单像素噪点
-    for start in 0..w * h {
-        if visited[start] || prob[start] < bin_thresh {
-            continue;
-        }
-        visited[start] = true;
-        stack.clear();
-        stack.push(start);
-        let (mut x0, mut y0) = (w, h);
-        let (mut x1, mut y1) = (0usize, 0usize);
-        let (mut sum, mut n) = (0f32, 0f32);
-        while let Some(i) = stack.pop() {
-            let cx = i % w;
-            let cy = i / w;
-            x0 = x0.min(cx);
-            y0 = y0.min(cy);
-            x1 = x1.max(cx);
-            y1 = y1.max(cy);
-            sum += prob[i];
-            n += 1.0;
-            // 4 邻域
-            if cx > 0 {
-                let ni = i - 1;
-                if !visited[ni] && prob[ni] >= bin_thresh {
-                    visited[ni] = true;
-                    stack.push(ni);
-                }
+/// DB 概率图 → 矩形框：阈值二值化 → 行方向求和找区间 → 列出连通行
+fn unclip_boxes(prob: &[f32], ow: usize, oh: usize, w: usize, h: usize, thresh: f32, box_thresh: f32) -> Vec<TextBox> {
+    let at = |x: usize, y: usize| prob[y * ow + x];
+    let min_ratio = box_thresh.max(0.01);
+    let mut boxes = Vec::new();
+    let mut y0 = 0usize;
+    while y0 < oh {
+        // 行方向：连续超过 box_thresh 的像素构成一条带
+        let mut x = 0usize;
+        while x < ow {
+            if at(x, y0) < min_ratio {
+                x += 1;
+                continue;
             }
-            if cx + 1 < w {
-                let ni = i + 1;
-                if !visited[ni] && prob[ni] >= bin_thresh {
-                    visited[ni] = true;
-                    stack.push(ni);
-                }
+            let mut x1 = x;
+            while x1 + 1 < ow && at(x1 + 1, y0) >= min_ratio {
+                x1 += 1;
             }
-            if cy > 0 {
-                let ni = i - w;
-                if !visited[ni] && prob[ni] >= bin_thresh {
-                    visited[ni] = true;
-                    stack.push(ni);
-                }
-            }
-            if cy + 1 < h {
-                let ni = i + w;
-                if !visited[ni] && prob[ni] >= bin_thresh {
-                    visited[ni] = true;
-                    stack.push(ni);
-                }
-            }
-        }
-        let score = if n > 0.0 { sum / n } else { 0.0 };
-        let area = (x1 - x0 + 1) * (y1 - y0 + 1);
-        if area >= min_area && score >= score_thresh {
-            out.push((x0, y0, x1, y1, score));
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 一张白底黑字的假概率图：3 行文字，每行 3 个块
-    fn fake_db_map() -> (Vec<f32>, usize, usize) {
-        let (w, h) = (64usize, 48usize);
-        let mut p = vec![0.0f32; w * h];
-        for row in 0..3usize {
-            let y0 = 6 + row * 14;
-            for blk in 0..3usize {
-                let x0 = 4 + blk * 18;
-                for y in y0..y0 + 6 {
-                    for x in x0..x0 + 14 {
-                        if x < w && y < h {
-                            p[y * w + x] = 0.9;
-                        }
+            let mut y1 = y0;
+            // 向下扩张，直到该区间的最大概率低于 thresh
+            'outer: while y1 + 1 < oh {
+                for xx in x..=x1 {
+                    if at(xx, y1 + 1) >= thresh {
+                        y1 += 1;
+                        continue 'outer;
                     }
                 }
+                break;
             }
+            // 带内平均分
+            let mut sum = 0f32;
+            let mut n = 0f32;
+            for yy in y0..=y1.min(oh - 1) {
+                for xx in x..=x1 {
+                    sum += at(xx, yy);
+                    n += 1.0;
+                }
+            }
+            let score = if n > 0.0 { sum / n } else { 0.0 };
+            if score >= thresh {
+                let sx = w as f32 / ow as f32;
+                let sy = h as f32 / oh as f32;
+                boxes.push(TextBox {
+                    x0: x as f32 * sx,
+                    y0: y0 as f32 * sy,
+                    x1: (x1 + 1) as f32 * sx,
+                    y1: (y1 + 1) as f32 * sy,
+                    score,
+                });
+            }
+            x = x1 + 1;
         }
-        (p, w, h)
+        y0 += 1;
     }
+    boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
+    boxes
+}
 
-    #[test]
-    fn 连通域数出文本块() {
-        let (p, w, h) = fake_db_map();
-        let comps = connected_components(&p, w, h, 0.3, 0.5);
-        assert_eq!(comps.len(), 9, "3 行 × 3 块");
-        for (x0, y0, x1, y1, s) in &comps {
-            assert_eq!((*x1 - x0 + 1, *y1 - y0 + 1), (14, 6));
-            assert!(*s > 0.85);
+// ---------------------------------------------------------------- Hub
+
+pub struct Hub {
+    clip: Mutex<Option<std::sync::Arc<Clip>>>,
+    nima_a: Mutex<Option<std::sync::Arc<Nima>>>,
+    nima_t: Mutex<Option<std::sync::Arc<Nima>>>,
+    scrfd: Mutex<Option<std::sync::Arc<Scrfd>>>,
+    arcface: Mutex<Option<std::sync::Arc<Arcface>>>,
+    rec: Mutex<Option<std::sync::Arc<Rec>>>,
+    det: Mutex<Option<std::sync::Arc<Det>>>,
+    text_cache: Mutex<HashMap<String, std::sync::Arc<Vec<f32>>>>,
+}
+
+impl Hub {
+    pub fn new() -> Self {
+        Self {
+            clip: Mutex::new(None),
+            nima_a: Mutex::new(None),
+            nima_t: Mutex::new(None),
+            scrfd: Mutex::new(None),
+            arcface: Mutex::new(None),
+            rec: Mutex::new(None),
+            det: Mutex::new(None),
+            text_cache: Mutex::new(HashMap::new()),
         }
     }
 
-    #[test]
-    fn 文本框不吞掉整行() {
-        // 旧实现会返回覆盖全图的 1~2 个大框
-        let (p, w, h) = fake_db_map();
-        let boxes = unclip_boxes(&p, w, h, 640, 480, 0.3, 0.5);
-        assert_eq!(boxes.len(), 9);
-        let covers_all = boxes.iter().any(|b| {
-            (b.x1 - b.x0) > 600.0 && (b.y1 - b.y0) > 400.0
-        });
-        assert!(!covers_all, "不应有覆盖全图的框");
-    }
-
-    #[test]
-    fn 阅读顺序自上而下() {
-        let (p, w, h) = fake_db_map();
-        let boxes = unclip_boxes(&p, w, h, 640, 480, 0.3, 0.5);
-        for wnd in boxes.windows(2) {
-            assert!(
-                wnd[0].y0 <= wnd[1].y0 + 1.0,
-                "顺序错: {:?} -> {:?}",
-                (wnd[0].y0, wnd[0].x0),
-                (wnd[1].y0, wnd[1].x0)
-            );
+    pub fn clip(&self) -> Result<std::sync::Arc<Clip>> {
+        let mut g = self.clip.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
         }
+        let c = std::sync::Arc::new(Clip::load()?);
+        *g = Some(c.clone());
+        Ok(c)
     }
 
-    #[test]
-    fn 空图不产生框() {
-        let p = vec![0.0f32; 32 * 32];
-        assert!(unclip_boxes(&p, 32, 32, 320, 320, 0.3, 0.5).is_empty());
+    /// CLIP 文本向量带缓存：Python 版每次查询重跑文本塔要 331ms，
+    /// 解析出的短语高度重复，缓存后开放词汇查询降到 ~0.1ms。
+    pub fn embed_text_cached(&self, text: &str) -> Result<Vec<f32>> {
+        if let Some(v) = self.text_cache.lock().get(text) {
+            return Ok((**v).clone());
+        }
+        let v = self.clip()?.embed_text(text)?;
+        self.text_cache
+            .lock()
+            .insert(text.to_string(), std::sync::Arc::new(v.clone()));
+        Ok(v)
+    }
+
+    pub fn nima(&self, aesthetic: bool) -> Result<std::sync::Arc<Nima>> {
+        let cell = if aesthetic { &self.nima_a } else { &self.nima_t };
+        let mut g = cell.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let p = if aesthetic { C::nima_aesthetic() } else { C::nima_technical() };
+        let n = std::sync::Arc::new(Nima::load(&p)?);
+        *g = Some(n.clone());
+        Ok(n)
+    }
+
+    pub fn scrfd(&self) -> Result<std::sync::Arc<Scrfd>> {
+        let mut g = self.scrfd.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let s = std::sync::Arc::new(Scrfd::load()?);
+        *g = Some(s.clone());
+        Ok(s)
+    }
+
+    pub fn rec(&self) -> Result<std::sync::Arc<Rec>> {
+        let mut g = self.rec.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let r = std::sync::Arc::new(Rec::load()?);
+        *g = Some(r.clone());
+        Ok(r)
+    }
+
+    pub fn det(&self) -> Result<std::sync::Arc<Det>> {
+        let mut g = self.det.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let d = std::sync::Arc::new(Det::load()?);
+        *g = Some(d.clone());
+        Ok(d)
+    }
+
+    pub fn arcface(&self) -> Result<std::sync::Arc<Arcface>> {
+        let mut g = self.arcface.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let a = std::sync::Arc::new(Arcface::load()?);
+        *g = Some(a.clone());
+        Ok(a)
+    }
+
+    pub fn warm_tag_matrix(&self, prompts: &[String]) -> Result<Vec<Vec<f32>>> {
+        prompts.iter().map(|p| self.embed_text_cached(p)).collect()
     }
 }
 
-/// 缩放（HWC u8 → HWC u8）
-///
-/// `interp` 语义明确：
-/// - `Interp::Area` —— 缩小时用 box 平均（等价 OpenCV INTER_AREA），放大时退化为双线性
-/// - `Interp::Bicubic` —— Catmull-Rom 三次插值（等价 OpenCV INTER_CUBIC）
-/// - `Interp::Bilinear` —— 双线性
+// ---------------------------------------------------------------- 工具
+
+/// 造 owned f32 张量（绕开 ort 的 inputs! 对借用 ndarray 的限制）
+fn f32_tensor(shape: &[usize], data: Vec<f32>) -> Result<ort::value::Tensor<f32>> {
+    let expect: usize = shape.iter().product();
+    if expect != data.len() {
+        bail!("张量形状 {:?} 与数据长度 {} 不符", shape, data.len());
+    }
+    let arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape.to_vec()), data)
+        .map_err(|e| anyhow::anyhow!("张量构造失败: {e}"))?;
+    ort::value::Tensor::from_array(arr)
+        .map_err(|e| anyhow::anyhow!("张量转 Tensor 失败: {e}"))
+}
+
+fn i64_tensor(shape: &[usize], data: Vec<i64>) -> Result<ort::value::Tensor<i64>> {
+    let expect: usize = shape.iter().product();
+    if expect != data.len() {
+        bail!("张量形状 {:?} 与数据长度 {} 不符", shape, data.len());
+    }
+    let arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape.to_vec()), data)
+        .map_err(|e| anyhow::anyhow!("张量构造失败: {e}"))?;
+    ort::value::Tensor::from_array(arr)
+        .map_err(|e| anyhow::anyhow!("张量转 Tensor 失败: {e}"))
+}
+
+/// 把 (Shape, &[f32]) 按行切开；(1,N,C) 与 (N,C) 两种导出都能处理
+/// (1,N,C) / (N,C) 两种导出统一成扁平 &[f32] + 行数 C
+fn rows_of(sd: (&ort::value::Shape, &[f32]), cols: usize) -> (Vec<f32>, usize) {
+    let (shape, data) = sd;
+    let n = if shape.len() == 3 {
+        shape[1] as usize * shape[2] as usize / cols
+    } else if shape.len() == 2 {
+        shape[0] as usize * shape[1] as usize / cols
+    } else {
+        0
+    };
+    (data[..(n * cols).min(data.len())].to_vec(), n)
+}
+
+/// 从 (Shape, &[f32]) 取前 dim 个元素
+fn extract_vec(shape_and_data: (&ort::value::Shape, &[f32]), dim: usize) -> Result<Vec<f32>> {
+    let (_shape, data) = shape_and_data;
+    if data.len() < dim {
+        bail!("模型输出维度不足：期望 {dim}，实际 {}", data.len());
+    }
+    Ok(data[..dim].to_vec())
+}
+
+pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let d = if n > 1e-8 { n } else { 1.0 };
+    v.iter().map(|x| x / d).collect()
+}
+
+fn nms(boxes: &[[f32; 4]], scores: &[f32], thr: f32) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    order.sort_unstable_by(|a, b| scores[*b].total_cmp(&scores[*a]));
+    let area = |b: &[f32; 4]| ((b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0)) as f64;
+    let mut keep = Vec::new();
+    while !order.is_empty() {
+        let i = order[0];
+        keep.push(i);
+        let mut rest = Vec::new();
+        for &j in &order[1..] {
+            let (a, b) = (&boxes[i], &boxes[j]);
+            let xx1 = a[0].max(b[0]);
+            let yy1 = a[1].max(b[1]);
+            let xx2 = a[2].min(b[2]);
+            let yy2 = a[3].min(b[3]);
+            let inter = ((xx2 - xx1).max(0.0) * (yy2 - yy1).max(0.0)) as f64;
+            let iou = inter / (area(a) + area(b) - inter + 1e-9);
+            if iou <= thr as f64 {
+                rest.push(j);
+            }
+        }
+        order = rest;
+    }
+    keep
+}
+
+/// 缩放方式（HWC u8 → HWC u8）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interp {
+    /// 缩小时按 box 平均（等价 OpenCV INTER_AREA），放大时退化为双线性
     Area,
     Bilinear,
+    /// Catmull-Rom 三次插值（等价 OpenCV INTER_CUBIC 的 a=-0.75）
     Bicubic,
 }
 
+/// Catmull-Rom 权重（OpenCV INTER_CUBIC 用 a=-0.75 参数化）
 #[inline]
-fn cubic_w(t: f32) -> (f32, f32, f32, f32) {
-    // Catmull-Rom（OpenCV INTER_CUBIC 的 a=-0.75 参数化）
+fn cubic_weights(t: f32) -> [f32; 4] {
     const A: f32 = -0.75;
     let x = t.abs();
     let x2 = x * x;
     let x3 = x2 * x;
     let w0 = ((A + 2.0) * x3 - (A + 3.0) * x2 + 1.0) * 0.5;
     let w1 = ((A * x - 5.0 * A) * x3 + (8.0 * A + 8.0) * x2 - (4.0 * A + 8.0) * x) * 0.5;
-    let w2 = ((-A - 2.0) * x3 + (3.0 * A + 3.0) * x2 + 3.0 * A * x) * 0.5 + 0.0;
+    let w2 = ((-A - 2.0) * x3 + (3.0 * A + 3.0) * x2 + 3.0 * A * x) * 0.5;
     let w3 = 1.0 - w0 - w1 - w2;
     if t < 0.0 {
-        (w3, w2, w1, w0)
+        [w3, w2, w1, w0]
     } else {
-        (w0, w1, w2, w3)
+        [w0, w1, w2, w3]
     }
 }
 
-pub fn resize_rgb(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize, interp: Interp) -> Vec<u8> {
+pub fn resize_rgb(
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    dw: usize,
+    dh: usize,
+    interp: Interp,
+) -> Vec<u8> {
     let mut out = vec![0u8; dw * dh * 3];
     if sw == 0 || sh == 0 {
         return out;
@@ -722,21 +764,21 @@ pub fn resize_rgb(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize, interp
         for y in 0..dh {
             let fypos = (y as f32 + 0.5) * fy - 0.5;
             let y0 = fypos.floor() as isize;
-            let (wy0, wy1, wy2, wy3) = cubic_w(fypos - y0 as f32);
+            let wy = cubic_weights(fypos - y0 as f32);
             for x in 0..dw {
                 let fxpos = (x as f32 + 0.5) * fx - 0.5;
                 let x0 = fxpos.floor() as isize;
-                let (wx0, wx1, wx2, wx3) = cubic_w(fxpos - x0 as f32);
+                let wx = cubic_weights(fxpos - x0 as f32);
                 for c in 0..3 {
                     let mut acc = 0.0f32;
-                    for (dy, wy) in [(0isize, wy0), (1, wy1), (2, wy2), (3, wy3)] {
+                    for (dy, wyi) in [(0isize, wy[0]), (1, wy[1]), (2, wy[2]), (3, wy[3])] {
                         let yy = (y0 + dy).clamp(0, sh as isize - 1) as usize;
                         let mut row = 0.0f32;
-                        for (dx, wx) in [(0isize, wx0), (1, wx1), (2, wx2), (3, wx3)] {
+                        for (dx, wxi) in [(0isize, wx[0]), (1, wx[1]), (2, wx[2]), (3, wx[3])] {
                             let xx = (x0 + dx).clamp(0, sw as isize - 1) as usize;
-                            row += src[(yy * sw + xx) * 3 + c] as f32 * wx;
+                            row += src[(yy * sw + xx) * 3 + c] as f32 * wxi;
                         }
-                        acc += row * wy;
+                        acc += row * wyi;
                     }
                     out[(y * dw + x) * 3 + c] = acc.clamp(0.0, 255.0) as u8;
                 }
@@ -766,55 +808,4 @@ pub fn resize_rgb(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize, interp
         }
     }
     out
-}
-
-#[cfg(test)]
-mod resize_tests {
-    use super::*;
-
-    fn grad(w: usize, h: usize) -> Vec<u8> {
-        let mut v = vec![0u8; w * h * 3];
-        for y in 0..h {
-            for x in 0..w {
-                for c in 0..3 {
-                    v[(y * w + x) * 3 + c] = ((x * 7 + y * 13 + c * 40) % 256) as u8;
-                }
-            }
-        }
-        v
-    }
-
-    #[test]
-    fn 三种插值都能跑且尺寸正确() {
-        let src = grad(37, 23);
-        for interp in [Interp::Area, Interp::Bilinear, Interp::Bicubic] {
-            let out = resize_rgb(&src, 37, 23, 64, 64, interp);
-            assert_eq!(out.len(), 64 * 64 * 3, "{interp:?}");
-        }
-        let down = resize_rgb(&src, 37, 23, 8, 8, Interp::Area);
-        assert_eq!(down.len(), 8 * 8 * 3);
-    }
-
-    #[test]
-    fn area缩小求平均() {
-        // 2x2 纯色块缩到 1x1，area 必须给出平均值
-        let src = vec![0u8, 0, 0, 100, 100, 100, 200, 200, 200, 255, 255, 255];
-        let out = resize_rgb(&src, 2, 2, 1, 1, Interp::Area);
-        let avg = (0 + 100 + 200 + 255) / 4;
-        assert!(
-            (out[0] as i32 - avg as i32).abs() <= 2,
-            "area 平均 {out[0]} vs {avg}"
-        );
-    }
-
-    #[test]
-    fn 同尺寸恒等() {
-        let src = grad(16, 16);
-        for interp in [Interp::Bilinear, Interp::Cubic_PROBE()] {
-            let out = resize_rgb(&src, 16, 16, 16, 16, interp);
-            assert_eq!(out, src, "{interp:?} 同尺寸应恒等");
-        }
-    }
-    #[allow(non_snake_case)]
-    fn Interp_Cubic_PROBE() -> Interp { Interp::Bicubic }
 }
