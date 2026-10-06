@@ -28,12 +28,17 @@ jobs:
         if: steps.ort-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          # eigen3 的 CMake FetchContent 会被网络卡住，直接用 apt 的
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build libeigen3-dev
           cd /tmp
           git clone --depth 1 -b v1.22.0 --recursive https://github.com/microsoft/onnxruntime.git
           cd onnxruntime
           ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
-            --compile_no_warning_as_error --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
-                                       ORT_LIB_LOCATION=/tmp/ort-install/lib
+            --update --compile_no_warning_as_error --use_openmp \
+            --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
+            --cmake_generator Ninja \
+            ORT_LIB_LOCATION=/tmp/ort-install/lib
           mkdir -p /tmp/ort-install
           cp -r build/Linux/Release/onnxruntime /tmp/ort-install/
           cp include /tmp/ort-install/ 2>/dev/null || true
