@@ -168,6 +168,7 @@ impl FacePipeline {
     }
 }
 
+#[derive(Clone)]
 pub struct FaceRecOut {
     pub bbox: [f32; 4],
     pub kps: [[f32; 2]; 5],

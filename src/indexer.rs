@@ -49,17 +49,18 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// 只查 DB 统计，不加载任何模型（CLI `stats` 用，避免 45s 的 tag 矩阵预热）
+    /// 只查 DB 统计，不加载任何模型（CLI `stats` 用，省掉 45s 的 tag 矩阵预热）
     pub fn with_stats(db: DB) -> Result<Self> {
         let hub = Arc::new(Hub::new());
+        let albums_db = db_placeholder(&db)?;
         Ok(Self {
-            db,
-            hub: hub.clone(),
-            visual: VisualAnalyzer::empty(hub),
+            visual: VisualAnalyzer::empty(hub.clone()),
             persons: Mutex::new(PersonStore::default()),
-            faces: FacePipeline::lazy(hub)?,
-            ocr: TargetedOcr::new(hub),
-            albums: AlbumEngine::lazy(db_placeholder(&db)?, hub)?,
+            faces: FacePipeline::new(hub.clone())?,
+            ocr: TargetedOcr::new(hub.clone()),
+            albums: AlbumEngine::lazy(albums_db, hub.clone())?,
+            db,
+            hub,
         })
     }
 
