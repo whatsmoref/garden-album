@@ -23,8 +23,7 @@ fn make_session(path: &Path) -> Result<Session> {
     // ort 2.0.0-rc.13：SessionBuilder 私有，只能经 Session::builder() 拿；
     // with_* 是 by-value 且返回 BuilderResult（错误里带 builder 本身，不是 Send/Sync），
     // 所以用 map_err 手动转成 anyhow，不能让 ? 走 From。
-    let mut b = Session::builder()
-        .map_err(|e| anyhow::anyhow!("创建 SessionBuilder 失败: {e}"))?;
+    let mut b = Session::builder().map_err(|e| anyhow::anyhow!("创建 SessionBuilder 失败: {e}"))?;
     b = b
         .with_intra_threads(C::ort_threads().min(2))
         .map_err(|e| anyhow::anyhow!("设置 intra_threads 失败: {e}"))?;
@@ -117,11 +116,7 @@ impl Clip {
                 }
             }
         }
-        let shape = vec![1usize, 3, s, s];
-        let data = ndarray::Array4::from_shape_vec(
-            [1usize, 3, s, s],
-            plane,
-        ).map_err(|e| anyhow::anyhow!("CLIP 图像张量构造失败: {e}"))?;
+        let data = f32_tensor(&[1, 3, s, s], plane)?;
         let mut sess = self.vision.lock();
         let outs = sess.run(ort::inputs![data])?;
         let v = extract_vec(outs[0].try_extract_tensor::<f32>()?, self.dim)?;
@@ -130,10 +125,9 @@ impl Clip {
 
     pub fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let ids = self.tokenizer.tokens(text);
-        let arr = ndarray::Array2::from_shape_vec([1usize, C::CLIP_TEXT_CTX], ids.clone())
-            .map_err(|e| anyhow::anyhow!("CLIP 文本张量构造失败: {e}"))?;
+        let ids_t = i64_tensor(&[1, C::CLIP_TEXT_CTX], ids.clone())?;
         let mut sess = self.text.lock();
-        let outs = sess.run(ort::inputs![arr])?;
+        let outs = sess.run(ort::inputs![ids_t])?;
         let (shape, data) = outs[0].try_extract_tensor::<f32>()?;
         let v = if shape.len() == 3 {
             // (1, 77, D)：取 EOS 位置池化
@@ -142,8 +136,7 @@ impl Clip {
                 .iter()
                 .rposition(|x| *x == C::CLIP_EOS)
                 .unwrap_or(C::CLIP_TEXT_CTX - 1);
-            let flat: &[f32] = data;
-            flat[eos * dim..eos * dim + dim].to_vec()
+            data[eos * dim..eos * dim + dim].to_vec()
         } else {
             extract_vec((shape, data), self.dim)?
         };
@@ -192,14 +185,12 @@ impl Nima {
             }
         }
         let out: Vec<f32> = if self.nchw {
-            let t = ndarray::Array4::from_shape_vec([1usize, 3, N, N], plane)
-                .map_err(|e| anyhow::anyhow!("NIMA 张量构造失败: {e}"))?;
+            let t = f32_tensor(&[1, 3, N, N], plane)?;
             let mut s = self.sess.lock();
             let o = s.run(ort::inputs![t])?;
             o[0].try_extract_tensor::<f32>()?.1.to_vec()
         } else {
-            let t = ndarray::Array4::from_shape_vec([1usize, N, N, 3], plane)
-                .map_err(|e| anyhow::anyhow!("NIMA 张量构造失败: {e}"))?;
+            let t = f32_tensor(&[1, N, N, 3], plane)?;
             let mut s = self.sess.lock();
             let o = s.run(ort::inputs![t])?;
             o[0].try_extract_tensor::<f32>()?.1.to_vec()
@@ -212,8 +203,7 @@ impl Nima {
         }
         let mut acc = 0.0;
         for (i, p) in out.iter().enumerate() {
-            let pv: f32 = **p;
-            acc += ((pv - max).exp() / sum) as f64 * (i + 1) as f64;
+            acc += ((p - max).exp() / sum) as f64 * (i + 1) as f64;
         }
         Ok(acc)
     }
@@ -264,8 +254,7 @@ impl Scrfd {
                 }
             }
         }
-        let t = ndarray::Array4::from_shape_vec([1usize, 3, 640, 640], canvas)
-            .map_err(|e| anyhow::anyhow!("SCRFD 输入构造失败: {e}"))?;
+        let t = f32_tensor(&[1, 3, 640, 640], canvas)?;
         let mut sess = self.sess.lock();
         let outs = sess.run(ort::inputs![t])?;
         // 本机 scrfd_10g.onnx 输出无 batch 维：scores(N,1)/bbox(N,4)/kps(N,10)
@@ -372,8 +361,7 @@ impl Arcface {
                 }
             }
         }
-        let t = ndarray::Array4::from_shape_vec([1usize, 3, n, n], plane)
-            .map_err(|e| anyhow::anyhow!("ArcFace 张量构造失败: {e}"))?;
+        let t = f32_tensor(&[1, 3, n, n], plane)?;
         let mut sess = self.sess.lock();
         let outs = sess.run(ort::inputs![t])?;
         let v = extract_vec(outs[0].try_extract_tensor::<f32>()?, 512)?;
@@ -488,6 +476,29 @@ impl Hub {
 }
 
 // ---------------------------------------------------------------- 工具
+
+/// 造 owned f32 张量（绕开 ort 的 inputs! 对借用 ndarray 的限制）
+fn f32_tensor(shape: &[usize], data: Vec<f32>) -> Result<ort::value::Tensor<f32>> {
+    let expect: usize = shape.iter().product();
+    if expect != data.len() {
+        bail!("张量形状 {:?} 与数据长度 {} 不符", shape, data.len());
+    }
+    let arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape.to_vec()), data)
+        .map_err(|e| anyhow::anyhow!("张量构造失败: {e}"))?;
+    ort::value::Tensor::from_array(arr)
+        .map_err(|e| anyhow::anyhow!("张量转 Tensor 失败: {e}"))
+}
+
+fn i64_tensor(shape: &[usize], data: Vec<i64>) -> Result<ort::value::Tensor<i64>> {
+    let expect: usize = shape.iter().product();
+    if expect != data.len() {
+        bail!("张量形状 {:?} 与数据长度 {} 不符", shape, data.len());
+    }
+    let arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape.to_vec()), data)
+        .map_err(|e| anyhow::anyhow!("张量构造失败: {e}"))?;
+    ort::value::Tensor::from_array(arr)
+        .map_err(|e| anyhow::anyhow!("张量转 Tensor 失败: {e}"))
+}
 
 /// 把 (Shape, &[f32]) 按行切开；(1,N,C) 与 (N,C) 两种导出都能处理
 fn rows_of(sd: (&ort::value::Shape, &[f32]), cols: usize) -> Vec<Vec<f32>> {
