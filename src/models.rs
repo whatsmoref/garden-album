@@ -959,12 +959,17 @@ mod resize_tests {
 
     #[test]
     fn cubic不产生越界值() {
+        // u8 的 cubic 会因权重为负而溢出，必须被 clamp 住
         let src = vec![255u8; 8 * 8 * 3];
         for interp in [Interp::Bilinear, Interp::Bicubic] {
             let out = resize_rgb(&src, 8, 8, 16, 16, interp);
-            for v in &out {
-                assert!(*v <= 255);
-            }
+            assert_eq!(out.len(), 16 * 16 * 3);
+            assert!(out.iter().all(|v| *v == 255), "{interp:?} 纯白输入应全白");
+        }
+        // 纯黑输入同理（权重负 × 0 仍为 0）
+        let black = vec![0u8; 8 * 8 * 3];
+        for interp in [Interp::Bilinear, Interp::Bicubic] {
+            assert!(resize_rgb(&black, 8, 8, 16, 16, interp).iter().all(|v| *v == 0));
         }
     }
 }
