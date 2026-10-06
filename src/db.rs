@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA: &str = r#"
@@ -78,13 +78,14 @@ impl VectorStore {
         if g.idx.contains_key(&pid) {
             return;
         }
-        g.idx.insert(pid, g.ids.len());
+        let n = g.ids.len();
+        g.idx.insert(pid, n);
         g.ids.push(pid);
         g.vecs.push(vec.to_vec());
     }
 
     /// 丢掉 photos 表里已不存在的向量，避免检索召回幽灵结果
-    pub fn prune(&self, keep: &HashSet) -> usize {
+    pub fn prune(&self, keep: &HashSet<i64>) -> usize {
         let mut g = self.inner.write();
         let before = g.ids.len();
         let pairs: Vec<(i64, Vec<f32>)> = g
@@ -182,7 +183,8 @@ impl VectorStore {
                 let b = off + 8 + j * 4;
                 v[j] = f32::from_le_bytes(data[b..b + 4].try_into().unwrap());
             }
-            g.idx.insert(id, g.ids.len());
+            let n = g.ids.len();
+            g.idx.insert(id, n);
             g.ids.push(id);
             g.vecs.push(v);
         }
@@ -190,7 +192,6 @@ impl VectorStore {
     }
 }
 
-use std::collections::HashSet;
 
 // ---------------------------------------------------------------- 行类型
 
