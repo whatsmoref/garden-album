@@ -27,7 +27,7 @@ use crate::{events, tags_of_doc};
 struct PreResult {
     meta: crate::db::PhotoMeta,
     vec: Vec<f32>,
-    tags: Vec<(String, f32)>,
+    tags: Vec<(String, f64)>,
     quality: (f64, f64, f64, f64),
     rgb: Vec<u8>,
     w: usize,

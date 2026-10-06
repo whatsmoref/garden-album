@@ -386,7 +386,9 @@ impl Rec {
 
     /// img: HWC u8，调用方保证 h=48
     pub fn run(&self, img: &[u8], w: usize, h: usize) -> Result<Vec<f32>> {
-        let t = f32_tensor(&[1, h, w, 3], img.to_vec())?;
+        // PP-OCR 的 rec 输入是 [0,1] 归一化后的 RGB
+        let plane: Vec<f32> = img.iter().map(|v| *v as f32 / 255.0).collect();
+        let t = f32_tensor(&[1, h, w, 3], plane)?;
         let mut sess = self.sess.lock();
         let outs = sess.run(ort::inputs![t])?;
         Ok(outs[0].try_extract_tensor::<f32>()?.1.to_vec())
