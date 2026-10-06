@@ -372,25 +372,129 @@ impl Arcface {
 
 // ---------------------------------------------------------------- RapidOCR
 
-/// RapidOCR 需要的模型文件（det/rec/cls）。Ort 不支持 PaddleOCR 那套前后处理，
-/// 故此处保留接口但由 ocrsys 决定是否可用。
-pub struct OcrPaths {
-    pub det: std::path::PathBuf,
-    pub rec: std::path::PathBuf,
-    pub cls: std::path::PathBuf,
+/// PP-OCRv4 rec：输入 NHWC [1, 48, W, 3]（W 动态，<=320），输出 [1, T, 6625] 概率
+pub struct Rec {
+    sess: Mutex<Session>,
 }
 
-impl OcrPaths {
-    pub fn from_config() -> Self {
-        Self {
-            det: C::ocr_det(),
-            rec: C::ocr_rec(),
-            cls: C::ocr_cls(),
+impl Rec {
+    fn load() -> Result<Self> {
+        Ok(Self {
+            sess: Mutex::new(make_session(&C::ocr_rec())?),
+        })
+    }
+
+    /// img: HWC u8，调用方保证 h=48
+    pub fn run(&self, img: &[u8], w: usize, h: usize) -> Result<Vec<f32>> {
+        let t = f32_tensor(&[1, h, w, 3], img.to_vec())?;
+        let mut sess = self.sess.lock();
+        let outs = sess.run(ort::inputs![t])?;
+        Ok(outs[0].try_extract_tensor::<f32>()?.1.to_vec())
+    }
+}
+
+/// PP-OCRv4 det：DB 二值化文本框检测。输入固定 [1, 3, 640, 640]，输出概率图
+pub struct Det {
+    sess: Mutex<Session>,
+}
+
+pub struct TextBox {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub score: f32,
+}
+
+impl Det {
+    fn load() -> Result<Self> {
+        Ok(Self {
+            sess: Mutex::new(make_session(&C::ocr_det())?),
+        })
+    }
+
+    /// → 文本框（原图坐标，按 y 排序）
+    pub fn detect(&self, img: &[u8], w: usize, h: usize, thresh: f32, box_thresh: f32) -> Result<Vec<TextBox>> {
+        const S: usize = 640;
+        let small = resize_rgb(img, w, h, S, S, false);
+        // DB 预处理：(img/255 - 0.5)/0.5
+        let mut plane = vec![0f32; 3 * S * S];
+        for i in 0..S * S {
+            for c in 0..3 {
+                plane[c * S * S + i] = (small[i * 3 + c] as f32 / 255.0 - 0.5) / 0.5;
+            }
         }
+        let t = f32_tensor(&[1, 3, S, S], plane)?;
+        let mut sess = self.sess.lock();
+        let outs = sess.run(ort::inputs![t])?;
+        let (shape, data) = outs[0].try_extract_tensor::<f32>()?;
+        let (ow, oh) = if shape.len() >= 2 {
+            (shape[shape.len() - 2] as usize, shape[shape.len() - 1] as usize)
+        } else {
+            (S, S)
+        };
+        let prob = &data[..(ow * oh).min(data.len())];
+        drop(sess);
+        Ok(unclip_boxes(prob, ow, oh, w, h, thresh, box_thresh))
     }
-    pub fn all_exist(&self) -> bool {
-        self.det.exists() && self.rec.exists() && self.cls.exists()
+}
+
+/// DB 概率图 → 矩形框：阈值二值化 → 行方向求和找区间 → 列出连通行
+fn unclip_boxes(prob: &[f32], ow: usize, oh: usize, w: usize, h: usize, thresh: f32, box_thresh: f32) -> Vec<TextBox> {
+    let at = |x: usize, y: usize| prob[y * ow + x];
+    let min_ratio = box_thresh.max(0.01);
+    let mut boxes = Vec::new();
+    let mut y0 = 0usize;
+    while y0 < oh {
+        // 行方向：连续超过 box_thresh 的像素构成一条带
+        let mut x = 0usize;
+        while x < ow {
+            if at(x, y0) < min_ratio {
+                x += 1;
+                continue;
+            }
+            let mut x1 = x;
+            while x1 + 1 < ow && at(x1 + 1, y0) >= min_ratio {
+                x1 += 1;
+            }
+            let mut y1 = y0;
+            // 向下扩张，直到该区间的最大概率低于 thresh
+            'outer: while y1 + 1 < oh {
+                for xx in x..=x1 {
+                    if at(xx, y1 + 1) >= thresh {
+                        y1 += 1;
+                        continue 'outer;
+                    }
+                }
+                break;
+            }
+            // 带内平均分
+            let mut sum = 0f32;
+            let mut n = 0f32;
+            for yy in y0..=y1.min(oh - 1) {
+                for xx in x..=x1 {
+                    sum += at(xx, yy);
+                    n += 1.0;
+                }
+            }
+            let score = if n > 0.0 { sum / n } else { 0.0 };
+            if score >= thresh {
+                let sx = w as f32 / ow as f32;
+                let sy = h as f32 / oh as f32;
+                boxes.push(TextBox {
+                    x0: x as f32 * sx,
+                    y0: y0 as f32 * sy,
+                    x1: (x1 + 1) as f32 * sx,
+                    y1: (y1 + 1) as f32 * sy,
+                    score,
+                });
+            }
+            x = x1 + 1;
+        }
+        y0 = y1.min(oh - 1) + 1;
     }
+    boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
+    boxes
 }
 
 // ---------------------------------------------------------------- Hub
@@ -401,6 +505,8 @@ pub struct Hub {
     nima_t: Mutex<Option<std::sync::Arc<Nima>>>,
     scrfd: Mutex<Option<std::sync::Arc<Scrfd>>>,
     arcface: Mutex<Option<std::sync::Arc<Arcface>>>,
+    rec: Mutex<Option<std::sync::Arc<Rec>>>,
+    det: Mutex<Option<std::sync::Arc<Det>>>,
     text_cache: Mutex<HashMap<String, std::sync::Arc<Vec<f32>>>>,
 }
 
@@ -412,6 +518,8 @@ impl Hub {
             nima_t: Mutex::new(None),
             scrfd: Mutex::new(None),
             arcface: Mutex::new(None),
+            rec: Mutex::new(None),
+            det: Mutex::new(None),
             text_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -459,6 +567,26 @@ impl Hub {
         let s = std::sync::Arc::new(Scrfd::load()?);
         *g = Some(s.clone());
         Ok(s)
+    }
+
+    pub fn rec(&self) -> Result<std::sync::Arc<Rec>> {
+        let mut g = self.rec.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let r = std::sync::Arc::new(Rec::load()?);
+        *g = Some(r.clone());
+        Ok(r)
+    }
+
+    pub fn det(&self) -> Result<std::sync::Arc<Det>> {
+        let mut g = self.det.lock();
+        if let Some(c) = g.as_ref() {
+            return Ok(c.clone());
+        }
+        let d = std::sync::Arc::new(Det::load()?);
+        *g = Some(d.clone());
+        Ok(d)
     }
 
     pub fn arcface(&self) -> Result<std::sync::Arc<Arcface>> {

@@ -270,7 +270,7 @@ pub struct EventRow {
 }
 
 /// `SELECT *` 的列顺序必须与 SCHEMA 里 photos 的定义严格一致
-fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
+pub fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
     Ok(Photo {
         id: r.get(0)?, path: r.get(1)?, filename: r.get(2)?,
         taken_at: r.get(3)?, gps_lat: r.get(4)?, gps_lon: r.get(5)?,
