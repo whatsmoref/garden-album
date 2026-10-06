@@ -828,7 +828,9 @@ pub fn resize_rgb(
         for y in 0..dh {
             let fypos = (y as f32 + 0.5) * fy - 0.5;
             let y0 = fypos.floor() as isize;
-            // 采样点是 y0-1, y0, y0+1, y0+2（4 邻域），与 cubic_kernel 的偏移一致
+            // cubic_weights 返回的 4 个权重对应采样点 (y0-1, y0, y0+1, y0+2)，
+            // 所以下面必须用 (y0 - 1 + dy) 取样。写成 y0 + dy 会整体错开一格，
+            // 同尺寸缩放就不再是恒等（测试 models::resize_tests::同尺寸恒等 会抓到）。
             let wy = cubic_weights(fypos - y0 as f32);
             for x in 0..dw {
                 let fxpos = (x as f32 + 0.5) * fx - 0.5;
@@ -836,11 +838,11 @@ pub fn resize_rgb(
                 let wx = cubic_weights(fxpos - x0 as f32);
                 for c in 0..3 {
                     let mut acc = 0.0f32;
-                    for (dy, wyi) in [(0isize, wy[0]), (1, wy[1]), (2, wy[2]), (3, wy[3])] {
-                        let yy = (y0 + dy).clamp(0, sh as isize - 1) as usize;
+                    for (k, wyi) in wy.iter().enumerate() {
+                        let yy = (y0 - 1 + k as isize).clamp(0, sh as isize - 1) as usize;
                         let mut row = 0.0f32;
-                        for (dx, wxi) in [(0isize, wx[0]), (1, wx[1]), (2, wx[2]), (3, wx[3])] {
-                            let xx = (x0 + dx).clamp(0, sw as isize - 1) as usize;
+                        for (m, wxi) in wx.iter().enumerate() {
+                            let xx = (x0 - 1 + m as isize).clamp(0, sw as isize - 1) as usize;
                             row += src[(yy * sw + xx) * 3 + c] as f32 * wxi;
                         }
                         acc += row * wyi;
