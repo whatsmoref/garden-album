@@ -268,63 +268,32 @@ pub struct EventRow {
     pub top_tags: String,
 }
 
-/// `SELECT *` 的列顺序，必须与 SCHEMA 里 photos 的定义严格一致
-impl rusqlite::FromRow for Photo {
-    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(Photo {
-            id: row.get(0)?,
-            path: row.get(1)?,
-            filename: row.get(2)?,
-            taken_at: row.get(3)?,
-            gps_lat: row.get(4)?,
-            gps_lon: row.get(5)?,
-            device: row.get(6)?,
-            width: row.get(7)?,
-            height: row.get(8)?,
-            is_screenshot: row.get(9)?,
-            phash: row.get(10)?,
-            aesthetic: row.get(11)?,
-            technical: row.get(12)?,
-            sharpness: row.get(13)?,
-            exposure: row.get(14)?,
-            known_face_count: row.get(15)?,
-            unknown_face_count: row.get(16)?,
-            avg_smile: row.get(17)?,
-            has_closed_eyes: row.get(18)?,
-            best_face_area: row.get(19)?,
-            event_id: row.get(20)?,
-            burst_id: row.get(21)?,
-            burst_best: row.get(22)?,
-            ocr_text: row.get(23)?,
-            added_at: row.get(24)?,
-            tags: Vec::new(),
-        })
-    }
+/// `SELECT *` 的列顺序必须与 SCHEMA 里 photos 的定义严格一致
+fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
+    Ok(Photo {
+        id: r.get(0)?, path: r.get(1)?, filename: r.get(2)?,
+        taken_at: r.get(3)?, gps_lat: r.get(4)?, gps_lon: r.get(5)?,
+        device: r.get(6)?, width: r.get(7)?, height: r.get(8)?,
+        is_screenshot: r.get(9)?, phash: r.get(10)?,
+        aesthetic: r.get(11)?, technical: r.get(12)?,
+        sharpness: r.get(13)?, exposure: r.get(14)?,
+        known_face_count: r.get(15)?, unknown_face_count: r.get(16)?,
+        avg_smile: r.get(17)?, has_closed_eyes: r.get(18)?, best_face_area: r.get(19)?,
+        event_id: r.get(20)?, burst_id: r.get(21)?, burst_best: r.get(22)?,
+        ocr_text: r.get(23)?, added_at: r.get(24)?,
+        tags: Vec::new(),
+    })
 }
 
-impl rusqlite::FromRow for EventRow {
-    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(EventRow {
-            id: row.get(0)?,
-            start: row.get(1)?,
-            end: row.get(2)?,
-            title: row.get(3)?,
-            city: row.get(4)?,
-            photo_count: row.get(5)?,
-            device_count: row.get(6)?,
-            top_tags: row.get(7)?,
-        })
-    }
+fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<EventRow> {
+    Ok(EventRow {
+        id: r.get(0)?, start: r.get(1)?, end: r.get(2)?, title: r.get(3)?,
+        city: r.get(4)?, photo_count: r.get(5)?, device_count: r.get(6)?, top_tags: r.get(7)?,
+    })
 }
 
-impl rusqlite::FromRow for AlbumRow {
-    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(AlbumRow {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            dsl: row.get(2)?,
-        })
-    }
+fn row_to_album(r: &rusqlite::Row) -> rusqlite::Result<AlbumRow> {
+    Ok(AlbumRow { id: r.get(0)?, name: r.get(1)?, dsl: r.get(2)? })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,31 +346,20 @@ impl DB {
         Ok(self.conn.execute(sql, params)?)
     }
 
-    pub fn query<T, P>(&self, sql: &str, params: P) -> Result<Vec<T>>
+    /// 通用查询：闭包把 `&Row` 映射成任意类型。
+    /// （rusqlite 0.32 没有 FromRow trait，故用闭包而不是泛型 trait。）
+    pub fn query<T, P, F>(&self, sql: &str, params: P, mut f: F) -> Result<Vec<T>>
     where
-        T: rusqlite::FromRow,
         P: rusqlite::Params,
+        F: FnMut(&rusqlite::Row) -> rusqlite::Result<T>,
     {
         let mut st = self.conn.prepare(sql)?;
-        let rows = st.query_map(params, |r| Ok(T::from_row(r)))?;
+        let rows = st.query_map(params, |r| f(r))?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
         }
         Ok(out)
-    }
-
-    pub fn query_map<T, P, F>(&self, sql: &str, params: P, mut f: F) -> Result<()>
-    where
-        P: rusqlite::Params,
-        F: FnMut(&rusqlite::Row) -> Result<T>,
-    {
-        let mut st = self.conn.prepare(sql)?;
-        let rows = st.query_map(params, |r| Ok(f(r)))?;
-        for r in rows {
-            r?;
-        }
-        Ok(())
     }
 
     pub fn commit(&self) -> Result<()> {
@@ -464,7 +422,7 @@ impl DB {
     }
 
     pub fn all_photos(&self) -> Result<Vec<Photo>> {
-        self.query("SELECT * FROM photos ORDER BY id", [])
+        self.query("SELECT * FROM photos ORDER BY id", [], row_to_photo)
     }
 
     pub fn photos_by_ids(&self, ids: &[i64]) -> Result<HashMap<i64, Photo>> {
@@ -475,7 +433,7 @@ impl DB {
         for chunk in ids.chunks(500) {
             let qs: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
             let sql = format!("SELECT * FROM photos WHERE id IN ({})", qs.join(","));
-            let rows: Vec<Photo> = self.query(&sql, rusqlite::params_from_iter(chunk))?;
+            let rows: Vec<Photo> = self.query(&sql, rusqlite::params_from_iter(chunk), row_to_photo)?;
             for r in rows {
                 out.insert(r.id, r);
             }
@@ -510,7 +468,7 @@ impl DB {
                 qs.join(",")
             );
             let rows: Vec<(i64, String, f64)> =
-                self.query(&sql, rusqlite::params_from_iter(chunk))?;
+                self.query(&sql, rusqlite::params_from_iter(chunk), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             for (pid, tag, score) in rows {
                 out.entry(pid).or_default().push((tag, score));
             }
@@ -522,6 +480,7 @@ impl DB {
         self.query(
             "SELECT tag, COUNT(*) c FROM tags GROUP BY tag ORDER BY c DESC",
             [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
     }
 
@@ -529,13 +488,14 @@ impl DB {
         self.query(
             "SELECT photo_id FROM tags WHERE tag=?",
             rusqlite::params![tag],
+            |r| r.get(0),
         )
     }
 
     // ---------- persons / faces ----------
 
     pub fn persons(&self) -> Result<Vec<Person>> {
-        self.query("SELECT id, name FROM persons ORDER BY id", [])
+        self.query("SELECT id, name FROM persons ORDER BY id", [], |r| Ok(Person { id: r.get(0)?, name: r.get(1)? }))
     }
 
     pub fn person_id_by_name(&self, name: &str) -> Result<Option<i64>> {
@@ -561,6 +521,7 @@ impl DB {
         self.query(
             "SELECT person_id, COUNT(*) c FROM faces GROUP BY person_id ORDER BY c DESC",
             [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
     }
 
@@ -639,6 +600,7 @@ impl DB {
                 "SELECT id, photo_id, person_id, bbox, kps, smile, eyes_open, face_area \
                  FROM faces WHERE photo_id=?",
                 rusqlite::params![photo_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
             )?;
         Ok(rows
             .into_iter()
@@ -709,7 +671,7 @@ impl DB {
     // ---------- albums ----------
 
     pub fn albums(&self) -> Result<Vec<AlbumRow>> {
-        self.query("SELECT id, name, dsl FROM albums ORDER BY id", [])
+        self.query("SELECT id, name, dsl FROM albums ORDER BY id", [], row_to_album)
     }
 
     pub fn save_album(&self, name: &str, dsl: &str) -> Result<i64> {
@@ -736,6 +698,7 @@ impl DB {
             "SELECT p.* FROM album_photos ap JOIN photos p ON p.id=ap.photo_id \
              WHERE ap.album_id=? ORDER BY p.taken_at DESC LIMIT ?",
             rusqlite::params![aid, limit as i64],
+            row_to_photo,
         )
     }
 
@@ -756,6 +719,7 @@ impl DB {
         self.query(
             "SELECT * FROM events ORDER BY start DESC LIMIT ?",
             rusqlite::params![limit as i64],
+            row_to_event,
         )
     }
 
@@ -800,13 +764,14 @@ impl DB {
     }
 
     pub fn bursts(&self) -> Result<Vec<(i64, i64)>> {
-        self.query("SELECT id, photo_count FROM bursts", [])
+        self.query("SELECT id, photo_count FROM bursts", [], |r| Ok((r.get(0)?, r.get(1)?)))
     }
 
     pub fn photos_in_burst(&self, bid: i64) -> Result<Vec<Photo>> {
         self.query(
             "SELECT * FROM photos WHERE burst_id=? ORDER BY id",
             rusqlite::params![bid],
+            row_to_photo,
         )
     }
 
