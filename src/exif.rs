@@ -259,7 +259,7 @@ fn rationals3(v: &[Val]) -> Option<f64> {
                 if *den == 0 {
                     return None;
                 }
-                d += n as f64 / den as f64;
+                d += *n as f64 / *den as f64;
             }
             // EXIF 存的是 [度, 分, 秒]
             let (dd, rest) = (d.trunc(), d - d.trunc());

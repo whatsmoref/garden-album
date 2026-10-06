@@ -133,18 +133,19 @@ impl Indexer {
         let mut done = 0usize;
         for chunk in paths.chunks(32) {
             self.db.begin()?;
-            // 阶段 1：解码 + CLIP + NIMA（无副作用，可并行）
-            let pre: Vec<Option<PreResult>> = chunk
+            // 阶段 1：解码 + CLIP + NIMA（纯计算，可并行）
+            // 注意：rusqlite 的 Connection 不是 Sync，去重必须在进 rayon 之前串行做完
+            let todo: Vec<&PathBuf> = chunk
+                .iter()
+                .filter(|p| self.db.photo_id(&p.to_string_lossy()).ok().flatten().is_none())
+                .collect();
+            let pre: Vec<(PathBuf, PreResult)> = todo
                 .par_iter()
-                .map(|p| self.prepare(p).ok().flatten())
+                .filter_map(|p| self.prepare(p).ok().map(|r| ((*p).clone(), r)))
                 .collect();
             // 阶段 2：串行落库（faces/persons/albums 有顺序依赖）
-            for (path, pre) in chunk.iter().zip(pre) {
-                let Some(pre) = pre else {
-                    eprintln!("[index] ✗ {}：视觉阶段失败", path.display());
-                    continue;
-                };
-                match self.persist(path, pre) {
+            for (path, pre) in pre {
+                match self.persist(&path, pre) {
                     Ok(Some(pid)) => {
                         done += 1;
                         println!("  ✓ {}", path.file_name().unwrap_or_default().to_string_lossy());
@@ -158,16 +159,14 @@ impl Indexer {
         Ok(done)
     }
 
-    fn prepare(&self, path: &Path) -> Result<Option<PreResult>> {
-        if self.db.photo_id(&path.to_string_lossy())?.is_some() {
-            return Ok(None);
-        }
+    /// 纯计算：不碰 DB（rusqlite 的 Connection 不是 Sync，rayon 里用不了）
+    fn prepare(&self, path: &Path) -> Result<PreResult> {
         let meta = extract_metadata(path)?;
         let (rgb, w, h) = load_image_rgb(path, 1024)?;
         let vec = self.visual.embed(&rgb, w, h)?;
         let tags = self.visual.top_tags(&vec, 8, None);
         let q = self.visual.quality(&rgb, w, h)?;
-        Ok(Some(PreResult {
+        Ok(PreResult {
             meta,
             vec,
             tags,
@@ -179,7 +178,7 @@ impl Indexer {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default(),
-        }))
+        })
     }
 
     /// 阶段 2：落库 + 人脸 + OCR + 相册
