@@ -521,7 +521,7 @@ impl QueryParser {
         }
 
         // 3) 剩余碎片 → jieba 兜底
-        for tok in jieba_rs::cut(&s, true) {
+        for tok in jieba().cut(&s, true) {
             let t = tok.trim();
             if t.is_empty() || STOP.contains(&t) {
                 continue;
@@ -542,6 +542,13 @@ impl QueryParser {
         dsl.time = compose(&parts, self.now);
         (dsl, chips)
     }
+}
+
+/// jieba-rs 0.7 只有 Jieba::cut，没有全局函数；懒加载一个全局实例
+fn jieba() -> &'static jieba_rs::Jieba {
+    use once_cell::sync::Lazy;
+    static J: Lazy<jieba_rs::Jieba> = Lazy::new(|| jieba_rs::Jieba::new());
+    &J
 }
 
 fn push_clip(d: &mut Dsl, term: String) {

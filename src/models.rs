@@ -491,7 +491,7 @@ fn unclip_boxes(prob: &[f32], ow: usize, oh: usize, w: usize, h: usize, thresh: 
             }
             x = x1 + 1;
         }
-        y0 = y1.min(oh - 1) + 1;
+        y0 += 1;
     }
     boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
     boxes

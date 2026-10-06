@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::db::{DB, Photo};

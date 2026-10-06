@@ -141,7 +141,7 @@ fn find_tiff_block(b: &[u8]) -> Option<&[u8]> {
     None
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Val {
     Short(u16),
     Long(u32),
@@ -242,27 +242,16 @@ fn parse_ifd(r: &Reader, tiff: &[u8], ifd_off: usize) -> Result<(Vec<(u16, Val)>
     Ok((out, next))
 }
 
-fn ascii(v: &[u16]) -> Option<String> {
+fn ascii(v: &[Val]) -> Option<String> {
     match v.first() {
         Some(Val::Ascii(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     }
 }
 
-fn rational(v: &[u16]) -> Option<f64> {
-    match v.first() {
-        Some(Val::Rationals(r)) if !r.is_empty() => {
-            let (num, den) = r[0];
-            if den == 0 {
-                return None;
-            }
-            Some(num as f64 / den as f64)
-        }
-        _ => None,
-    }
-}
 
-fn rationals3(v: &[u16]) -> Option<f64> {
+
+fn rationals3(v: &[Val]) -> Option<f64> {
     match v.first() {
         Some(Val::Rationals(r)) if r.len() >= 3 => {
             let mut d = 0.0;
@@ -350,7 +339,7 @@ pub fn parse_tiff(tiff: &[u8]) -> Result<ExifData> {
             out.gps_lon = lon.map(round6);
         }
     }
-    let _ = (rational, next);
+    let _ = next;
     Ok(out)
 }
 

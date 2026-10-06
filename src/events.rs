@@ -308,7 +308,7 @@ fn rebuild_bursts(db: &DB, groups: &[Vec<Seg>]) -> Result<()> {
                 let hd = if prev.phash.is_empty() || s.phash.is_empty() {
                     64
                 } else {
-                    phash_hamming(prev.phash, s.phash)
+                    phash_hamming(&prev.phash, &s.phash)
                 };
                 if dt > C::BURST_DT_S || hd > C::BURST_PHASH_HAMMING {
                     if cur.len() >= 2 {
