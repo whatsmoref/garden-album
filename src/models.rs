@@ -269,7 +269,7 @@ impl Scrfd {
         let mut boxes_all: Vec<[f32; 4]> = Vec::new();
         let mut kps_all: Vec<[f32; 10]> = Vec::new();
         let mut scores_all: Vec<f32> = Vec::new();
-        for (i, stride) in self.strides.iter().enumerate() {
+        for stride in self.strides.iter() {
             let side = 640 / stride;
             let na = ((n / (side * side).max(1)).max(1)) as f32;
             for j in 0..n {
