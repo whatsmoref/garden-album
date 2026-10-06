@@ -162,6 +162,7 @@ pub fn has_amount(s: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)] // 测试名用中文更好读
 mod tests {
     use super::*;
 

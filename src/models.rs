@@ -809,3 +809,119 @@ pub fn resize_rgb(
     }
     out
 }
+
+#[cfg(test)]
+#[allow(non_snake_case)]
+mod resize_tests {
+    use super::*;
+
+    fn grad(w: usize, h: usize) -> Vec<u8> {
+        let mut v = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                for c in 0..3 {
+                    v[(y * w + x) * 3 + c] = ((x * 7 + y * 13 + c * 40) % 256) as u8;
+                }
+            }
+        }
+        v
+    }
+
+    /// 假 DB 概率图：3 行文字，每行 3 个 14x6 的块
+    fn fake_db_map() -> (Vec<f32>, usize, usize) {
+        let (w, h) = (64usize, 48usize);
+        let mut p = vec![0.0f32; w * h];
+        for row in 0..3usize {
+            let y0 = 6 + row * 14;
+            for blk in 0..3usize {
+                let x0 = 4 + blk * 18;
+                for y in y0..y0 + 6 {
+                    for x in x0..x0 + 14 {
+                        if x < w && y < h {
+                            p[y * w + x] = 0.9;
+                        }
+                    }
+                }
+            }
+        }
+        (p, w, h)
+    }
+
+    #[test]
+    fn 连通域数出文本块() {
+        let (p, w, h) = fake_db_map();
+        let comps = connected_components(&p, w, h, 0.3, 0.5);
+        assert_eq!(comps.len(), 9, "3 行 × 3 块");
+        for (x0, y0, x1, y1, s) in &comps {
+            assert_eq!((*x1 - x0 + 1, *y1 - y0 + 1), (14, 6));
+            assert!(*s > 0.85);
+        }
+    }
+
+    #[test]
+    fn 文本框不吞掉整行() {
+        // 旧实现（逐行扫描+纵向扩张）会返回覆盖全图的 1~2 个大框
+        let (p, w, h) = fake_db_map();
+        let boxes = unclip_boxes(&p, w, h, 640, 480, 0.3, 0.5);
+        assert_eq!(boxes.len(), 9);
+        let covers_all = boxes.iter().any(|b| (b.x1 - b.x0) > 600.0 && (b.y1 - b.y0) > 400.0);
+        assert!(!covers_all, "不应有覆盖全图的框");
+    }
+
+    #[test]
+    fn 阅读顺序自上而下() {
+        let (p, w, h) = fake_db_map();
+        let boxes = unclip_boxes(&p, w, h, 640, 480, 0.3, 0.5);
+        for wnd in boxes.windows(2) {
+            assert!(
+                wnd[0].y0 <= wnd[1].y0 + 1.0,
+                "顺序错: {:?} -> {:?}",
+                (wnd[0].y0, wnd[0].x0),
+                (wnd[1].y0, wnd[1].x0)
+            );
+        }
+    }
+
+    #[test]
+    fn 空图不产生框() {
+        let p = vec![0.0f32; 32 * 32];
+        assert!(unclip_boxes(&p, 32, 32, 320, 320, 0.3, 0.5).is_empty());
+    }
+
+    #[test]
+    fn 三种插值都能跑且尺寸正确() {
+        let src = grad(37, 23);
+        for interp in [Interp::Area, Interp::Bilinear, Interp::Bicubic] {
+            assert_eq!(resize_rgb(&src, 37, 23, 64, 64, interp).len(), 64 * 64 * 3);
+            assert_eq!(resize_rgb(&src, 37, 23, 8, 8, interp).len(), 8 * 8 * 3);
+            assert_eq!(resize_rgb(&src, 37, 23, 128, 128, interp).len(), 128 * 128 * 3);
+        }
+    }
+
+    #[test]
+    fn area缩小求平均() {
+        let src = vec![0u8, 0, 0, 100, 100, 100, 200, 200, 200, 255, 255, 255];
+        let out = resize_rgb(&src, 2, 2, 1, 1, Interp::Area);
+        let avg = (0 + 100 + 200 + 255) / 4;
+        assert!((out[0] as i32 - avg as i32).abs() <= 2, "area 平均 {} vs {avg}", out[0]);
+    }
+
+    #[test]
+    fn 同尺寸恒等() {
+        let src = grad(16, 16);
+        for interp in [Interp::Bilinear, Interp::Bicubic] {
+            assert_eq!(resize_rgb(&src, 16, 16, 16, 16, interp), src, "{interp:?}");
+        }
+    }
+
+    #[test]
+    fn cubic不产生越界值() {
+        let src = vec![255u8; 8 * 8 * 3];
+        for interp in [Interp::Bilinear, Interp::Bicubic] {
+            let out = resize_rgb(&src, 8, 8, 16, 16, interp);
+            for v in &out {
+                assert!(*v <= 255);
+            }
+        }
+    }
+}

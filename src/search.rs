@@ -344,6 +344,7 @@ fn detect_last_meeting(text: &str, person_names: &[String]) -> Option<String> {
 pub use crate::db::row_to_photo;
 
 #[cfg(test)]
+#[allow(non_snake_case)] // 测试名用中文更好读
 mod tests {
     use super::*;
 

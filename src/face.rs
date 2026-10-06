@@ -332,6 +332,7 @@ fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {
 
 
 #[cfg(test)]
+#[allow(non_snake_case)] // 测试名用中文更好读
 mod tests {
     use super::*;
 

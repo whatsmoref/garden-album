@@ -61,7 +61,10 @@ jobs:
           (cd dist && ln -sf libonnxruntime.so.1.23.2 libonnxruntime.so.1 \
                      && ln -sf libonnxruntime.so.1 libonnxruntime.so)
           echo "--- 运行验证 ---"
-          LD_LIBRARY_PATH=dist ./dist/album
+          # 无子命令时 clap 会以 exit 2 退出（required subcommand），所以用 --version
+          LD_LIBRARY_PATH=dist ./dist/album --version
+          # 顺带验证 stats 能连上 DB（此时还没有库，应报"无模型"而不是崩）
+          LD_LIBRARY_PATH=dist ALBUM_ROOT=/tmp/nonexistent ./dist/album stats || true
           # 静态链入的 ORT 不需要额外 .so；只记录依赖与 glibc 要求便于排查
           ldd dist/album | awk '/=> \//{print $3}' | sort -u > dist/ldd.txt || true
           echo "--- max GLIBC symbol version ---"
