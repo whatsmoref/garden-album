@@ -39,7 +39,7 @@ jobs:
                   print('extracted', dst, os.path.getsize(dst))
           PYEOF
           ln -sf /opt/ort-install/lib/libonnxruntime.so.1.23.2 /opt/ort-install/lib/libonnxruntime.so
-          ldconfig
+          sudo ldconfig
           echo "--- so 需要的最高 glibc 符号 ---"
           objdump -T /opt/ort-install/lib/libonnxruntime.so.1.23.2 | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
 
@@ -102,7 +102,7 @@ jobs:
                       shutil.copyfileobj(src, out)
           PYEOF
           ln -sf /opt/ort-install/lib/libonnxruntime.so.1.23.2 /opt/ort-install/lib/libonnxruntime.so
-          ldconfig
+          sudo ldconfig
 
       - name: cargo test
         run: cargo test --release
