@@ -2,7 +2,9 @@
 //! OCR 侧保留 Python 版能力但走 ort，故不需要 tflitec/FFI。
 
 use anyhow::{bail, Context, Result};
+use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
+use ort::value::ValueType;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,9 +20,11 @@ fn make_session(path: &Path) -> Result<Session> {
     if !path.exists() {
         bail!("模型文件不存在：{}", path.display());
     }
-    let mut b = ort::session::SessionBuilder::new();
-    b = b.with_intra_threads(C::ort_threads().min(2));
-    b = b.with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?;
+    // 注意 ort 2.0.0-rc.13 的 Builder 方法是 by-value 且返回 BuilderResult，
+    // commit_from_file 需要 &mut self，所以串成 ? 链
+    let mut b = ort::session::SessionBuilder::new()?
+        .with_intra_threads(C::ort_threads().min(2))?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?;
     b.commit_from_file(path)
         .with_context(|| format!("加载 ONNX 模型失败 {}", path.display()))
 }
@@ -114,7 +118,7 @@ impl Clip {
         ).map_err(|e| anyhow::anyhow!("CLIP 图像张量构造失败: {e}"))?;
         let mut sess = self.vision.lock();
         let outs = sess.run(ort::inputs![data])?;
-        let v = extract_vec(outs[0].try_view_tensor()?, self.dim)?;
+        let v = extract_vec(outs[0].try_extract_tensor::<f32>()?, self.dim)?;
         Ok(l2_normalize(&v))
     }
 
@@ -125,21 +129,17 @@ impl Clip {
             .map_err(|e| anyhow::anyhow!("CLIP 文本张量构造失败: {e}"))?;
         let mut sess = self.text.lock();
         let outs = sess.run(ort::inputs![arr])?;
-        let t = outs[0].try_view_tensor()?;
-        let v = if t.ndim() == 3 {
+        let (shape, data) = outs[0].try_extract_tensor::<f32>()?;
+        let v = if shape.len() == 3 {
             // (1, 77, D)：取 EOS 位置池化
-            let dim = t.shape()[2];
+            let dim = shape[2] as usize;
             let eos = ids
                 .iter()
                 .rposition(|x| *x == C::CLIP_EOS)
                 .unwrap_or(C::CLIP_TEXT_CTX - 1);
-            let mut out = vec![0f32; dim];
-            for d in 0..dim {
-                out[d] = t[[0, eos, d]];
-            }
-            out
+            data[eos * dim..eos * dim + dim].to_vec()
         } else {
-            extract_vec(t, self.dim)?
+            extract_vec((shape, data), self.dim)?
         };
         Ok(l2_normalize(&v))
     }
@@ -160,7 +160,13 @@ impl Nima {
     fn load(path: &Path) -> Result<Self> {
         let s = make_session(path)?;
         // tflite2onnx 导出的输入是 NCHW；原生 ONNX 导出版可能是 NHWC，两种都兼容
-        let nchw = s.inputs()[0].input_type().tensor_shape().map(|d| d.len() == 4 && d[1] == 3).unwrap_or(false);
+        let nchw = match s.inputs()[0].dtype() {
+            ValueType::Tensor { shape, .. } => {
+                let d: Vec<i64> = shape.iter().copied().collect();
+                d.len() == 4 && d[1] == 3
+            }
+            _ => false,
+        };
         Ok(Self {
             sess: Mutex::new(s),
             nchw,
@@ -184,13 +190,13 @@ impl Nima {
                 .map_err(|e| anyhow::anyhow!("NIMA 张量构造失败: {e}"))?;
             let mut s = self.sess.lock();
             let o = s.run(ort::inputs![t])?;
-            o[0].try_view_tensor()?.iter().copied().collect()
+            o[0].try_extract_tensor::<f32>()?.1.to_vec()
         } else {
             let t = ndarray::Array4::from_shape_vec(vec![1, N, N, 3], plane)
                 .map_err(|e| anyhow::anyhow!("NIMA 张量构造失败: {e}"))?;
             let mut s = self.sess.lock();
             let o = s.run(ort::inputs![t])?;
-            o[0].try_view_tensor()?.iter().copied().collect()
+            o[0].try_extract_tensor::<f32>()?.1.to_vec()
         };
         // softmax 后与 1..10 求期望
         let max = out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -256,10 +262,10 @@ impl Scrfd {
         let mut sess = self.sess.lock();
         let outs = sess.run(ort::inputs![t])?;
         // 本机 scrfd_10g.onnx 输出无 batch 维：scores(N,1)/bbox(N,4)/kps(N,10)
-        // 部分导出带 (1,N,C)，统一压成二维
-        let score: Vec<Vec<f32>> = outs[0].try_view_tensor()?.into_dimensionality::<ndarray::Ix2>()?.rows().into_iter().map(|r| r.to_vec()).collect();
-        let bbox: Vec<Vec<f32>> = outs[self.fmc].try_view_tensor()?.into_dimensionality::<ndarray::Ix2>()?.rows().into_iter().map(|r| r.to_vec()).collect();
-        let kps: Vec<Vec<f32>> = outs[self.fmc * 2].try_view_tensor()?.into_dimensionality::<ndarray::Ix2>()?.rows().into_iter().map(|r| r.to_vec()).collect();
+        // 部分导出带 (1,N,C)，统一按 shape 压成二维（rows() 取行首）
+        let score = rows_of(outs[0].try_extract_tensor::<f32>()?, 1);
+        let bbox = rows_of(outs[self.fmc].try_extract_tensor::<f32>()?, 4);
+        let kps = rows_of(outs[self.fmc * 2].try_extract_tensor::<f32>()?, 10);
 
         let mut boxes_all: Vec<[f32; 4]> = Vec::new();
         let mut kps_all: Vec<[f32; 10]> = Vec::new();
@@ -363,7 +369,7 @@ impl Arcface {
             .map_err(|e| anyhow::anyhow!("ArcFace 张量构造失败: {e}"))?;
         let mut sess = self.sess.lock();
         let outs = sess.run(ort::inputs![t])?;
-        let v = extract_vec(outs[0].try_view_tensor()?, 512)?;
+        let v = extract_vec(outs[0].try_extract_tensor::<f32>()?, 512)?;
         Ok(l2_normalize(&v))
     }
 }
@@ -476,14 +482,25 @@ impl Hub {
 
 // ---------------------------------------------------------------- 工具
 
-fn extract_vec(t: &ort::value::TensorRef<f32>, dim: usize) -> Result<Vec<f32>> {
-    let shape = t.shape();
-    let total: usize = shape.iter().product();
-    let data = t.iter().copied().collect::<Vec<f32>>();
+/// 把 (Shape, &[f32]) 按行切开；(1,N,C) 与 (N,C) 两种导出都能处理
+fn rows_of(sd: (&ort::value::Shape, &[f32]), cols: usize) -> Vec<Vec<f32>> {
+    let (shape, data) = sd;
+    let n = if shape.len() == 3 {
+        shape[1] as usize * shape[2] as usize / cols
+    } else if shape.len() == 2 {
+        shape[0] as usize * shape[1] as usize / cols
+    } else {
+        0
+    };
+    (0..n).map(|i| data[i * cols..(i + 1) * cols].to_vec()).collect()
+}
+
+/// 从 (&Shape, &[f32]) 取前 dim 个元素
+fn extract_vec(shape_and_data: (&ort::value::Shape, &[f32]), dim: usize) -> Result<Vec<f32>> {
+    let (_shape, data) = shape_and_data;
     if data.len() < dim {
         bail!("模型输出维度不足：期望 {dim}，实际 {}", data.len());
     }
-    let _ = total;
     Ok(data[..dim].to_vec())
 }
 
