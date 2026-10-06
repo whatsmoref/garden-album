@@ -286,7 +286,7 @@ fn r_season(s: &str, p: &mut TimeParts) -> Option<String> {
 }
 
 fn r_festival(s: &str, p: &mut TimeParts) -> Option<String> {
-    p.window = festival_window(s)?;
+    p.window = Some(festival_window(s)?);
     Some(s.to_string())
 }
 
@@ -511,7 +511,7 @@ impl QueryParser {
             });
             match kind {
                 Kind::Tag => dsl.tags.get_or_insert_with(Default::default).all.push(payload.clone()),
-                Kind::Clip => push_clip(&mut dsl, payload),
+                Kind::Clip => push_clip(&mut dsl, payload.clone()),
                 Kind::Person => dsl.people.get_or_insert_with(Default::default).all.push(payload.clone()),
                 Kind::Mod(f) => f(&mut dsl),
             }

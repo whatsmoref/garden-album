@@ -193,7 +193,6 @@ fn estimate_similarity(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> Option<[f32;
     dcx /= n;
     dcy /= n;
     let mut sxx = 0.0f32;
-    let mut sxy = 0.0f32;
     let mut syy = 0.0f32;
     let mut sxsx = 0.0f32;
     let mut sxsy = 0.0f32;
@@ -203,7 +202,6 @@ fn estimate_similarity(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> Option<[f32;
         let (px, py) = (src[i][0] - scx, src[i][1] - scy);
         let (qx, qy) = (dst[i][0] - dcx, dst[i][1] - dcy);
         sxx += px * px;
-        sxy += px * py;
         syy += py * py;
         sxsx += px * qx;
         sxsy += px * qy;
@@ -214,7 +212,7 @@ fn estimate_similarity(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> Option<[f32;
     if den < 1e-6 {
         return None;
     }
-    // 对齐 OpenCV estimateAffinePartial2D：先算带旋转缩放，再去掉旋转
+    // 对齐 OpenCV estimateAffinePartial2D：相似变换最小二乘
     let a = (sxsx + sysy) / den;
     let b = (sxsy - sysx) / den;
     let scale = (a * a + b * b).sqrt();

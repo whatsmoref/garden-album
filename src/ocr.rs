@@ -60,7 +60,7 @@ impl TargetedOcr {
         let scale = rh as f32 / h as f32;
         let rw = ((w as f32 * scale).round() as usize).clamp(8, 320);
         let small = resize_rgb(&rgb, w, h, rw, rh, false);
-        let out = rec.run(&small)?;
+        let out = rec.run(&small, rw, rh)?;
         let (text, conf) = ctc_decode(&out, dict, rw, rh);
         if text.trim().is_empty() || conf < 0.3 {
             return Ok((String::new(), Vec::new()));
