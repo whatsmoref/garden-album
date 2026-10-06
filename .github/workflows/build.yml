@@ -7,7 +7,9 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-22.04
+    # 必须用 24.04：ort 下载的预编译 ONNX Runtime 是针对 glibc 2.39 链接的，
+    # 在 22.04（glibc 2.35）会出现 __isoc23_strtol / _M_replace_cold 未定义符号
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -34,7 +36,7 @@ jobs:
           retention-days: 30
 
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
