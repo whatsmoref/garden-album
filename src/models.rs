@@ -447,62 +447,105 @@ impl Det {
     }
 }
 
-/// DB 概率图 → 矩形框：阈值二值化 → 行方向求和找区间 → 列出连通行
-fn unclip_boxes(prob: &[f32], ow: usize, oh: usize, w: usize, h: usize, thresh: f32, box_thresh: f32) -> Vec<TextBox> {
-    let at = |x: usize, y: usize| prob[y * ow + x];
-    let min_ratio = box_thresh.max(0.01);
-    let mut boxes = Vec::new();
-    let mut y0 = 0usize;
-    while y0 < oh {
-        // 行方向：连续超过 box_thresh 的像素构成一条带
-        let mut x = 0usize;
-        while x < ow {
-            if at(x, y0) < min_ratio {
-                x += 1;
-                continue;
-            }
-            let mut x1 = x;
-            while x1 + 1 < ow && at(x1 + 1, y0) >= min_ratio {
-                x1 += 1;
-            }
-            let mut y1 = y0;
-            // 向下扩张，直到该区间的最大概率低于 thresh
-            'outer: while y1 + 1 < oh {
-                for xx in x..=x1 {
-                    if at(xx, y1 + 1) >= thresh {
-                        y1 += 1;
-                        continue 'outer;
-                    }
-                }
-                break;
-            }
-            // 带内平均分
-            let mut sum = 0f32;
-            let mut n = 0f32;
-            for yy in y0..=y1.min(oh - 1) {
-                for xx in x..=x1 {
-                    sum += at(xx, yy);
-                    n += 1.0;
-                }
-            }
-            let score = if n > 0.0 { sum / n } else { 0.0 };
-            if score >= thresh {
-                let sx = w as f32 / ow as f32;
-                let sy = h as f32 / oh as f32;
-                boxes.push(TextBox {
-                    x0: x as f32 * sx,
-                    y0: y0 as f32 * sy,
-                    x1: (x1 + 1) as f32 * sx,
-                    y1: (y1 + 1) as f32 * sy,
-                    score,
-                });
-            }
-            x = x1 + 1;
-        }
-        y0 += 1;
+/// DB 概率图 → 文本框
+///
+/// 流程对齐 PaddleOCR 的 DB 后处理：二值化 → 连通域 → 按面积比例 unclip 扩张。
+/// 旧实现是「逐行扫描 + 纵向扩张」，会把相邻文本行吃成一个框，
+/// 又会在概率图的凹陷处断开，票据 OCR 基本不可用。
+fn unclip_boxes(
+    prob: &[f32],
+    ow: usize,
+    oh: usize,
+    w: usize,
+    h: usize,
+    thresh: f32,
+    box_thresh: f32,
+) -> Vec<TextBox> {
+    let bin_thresh = thresh.max(box_thresh).max(0.05);
+    let comps = connected_components(prob, ow, oh, bin_thresh, box_thresh);
+    let sx = w as f32 / ow as f32;
+    let sy = h as f32 / oh as f32;
+    let mut out = Vec::with_capacity(comps.len());
+    for (x0, y0, x1, y1, score) in comps {
+        let bw = (x1 - x0 + 1) as f32;
+        let bh = (y1 - y0 + 1) as f32;
+        // DB 的 unclip：目标面积 = 原面积 × 1.6，反推单边扩张量
+        let want = (bw * bh * 1.6f32).sqrt();
+        let expand = ((want - bw.min(bh)).max(2.0) / 2.0).min(bw.min(bh) * 0.5);
+        out.push(TextBox {
+            x0: (x0 as f32 - expand).max(0.0) * sx,
+            y0: (y0 as f32 - expand).max(0.0) * sy,
+            x1: (x1 as f32 + expand + 1.0).min(ow as f32) * sx,
+            y1: (y1 as f32 + expand + 1.0).min(oh as f32) * sy,
+            score,
+        });
     }
-    boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
-    boxes
+    // 阅读顺序：从上到下，同一行从左到右
+    let row_h = oh as f32 * 0.01;
+    out.sort_by(|a, b| {
+        if (a.y0 - b.y0).abs() < row_h {
+            a.x0.total_cmp(&b.x0)
+        } else {
+            a.y0.total_cmp(&b.y0)
+        }
+    });
+    out
+}
+
+/// 4 邻域连通域标记，返回 (x0, y0, x1, y1, 平均概率)
+fn connected_components(
+    prob: &[f32],
+    w: usize,
+    h: usize,
+    bin_thresh: f32,
+    score_thresh: f32,
+) -> Vec<(usize, usize, usize, usize, f32)> {
+    let mut visited = vec![false; w * h];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut out = Vec::new();
+    const MIN_AREA: usize = 4; // 滤掉单像素噪点
+    for start in 0..w * h {
+        if visited[start] || prob.get(start).copied().unwrap_or(0.0) < bin_thresh {
+            continue;
+        }
+        visited[start] = true;
+        stack.clear();
+        stack.push(start);
+        let (mut x0, mut y0) = (w, h);
+        let (mut x1, mut y1) = (0usize, 0usize);
+        let (mut sum, mut n) = (0f32, 0f32);
+        while let Some(i) = stack.pop() {
+            let cx = i % w;
+            let cy = i / w;
+            x0 = x0.min(cx);
+            y0 = y0.min(cy);
+            x1 = x1.max(cx);
+            y1 = y1.max(cy);
+            sum += prob[i];
+            n += 1.0;
+            for (nx, ny) in [
+                (cx as isize - 1, cy as isize),
+                (cx as isize + 1, cy as isize),
+                (cx as isize, cy as isize - 1),
+                (cx as isize, cy as isize + 1),
+            ] {
+                if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                    continue;
+                }
+                let ni = ny as usize * w + nx as usize;
+                if !visited[ni] && prob[ni] >= bin_thresh {
+                    visited[ni] = true;
+                    stack.push(ni);
+                }
+            }
+        }
+        let score = if n > 0.0 { sum / n } else { 0.0 };
+        let area = (x1 - x0 + 1) * (y1 - y0 + 1);
+        if area >= MIN_AREA && score >= score_thresh {
+            out.push((x0, y0, x1, y1, score));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- Hub
