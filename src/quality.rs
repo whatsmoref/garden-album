@@ -108,9 +108,13 @@ pub fn cleanup_suggestions(db: &DB) -> Result<Vec<Suggestion>> {
         }
     }
 
-    // 3) 模糊且无人脸
+    // 3)+4) 一次遍历同时判模糊与双低分（原来两个独立 for 都遍历 all）
     for p in &all {
-        if p.sharpness.unwrap_or(100.0) < 25.0 && p.known_face_count == 0 && p.unknown_face_count == 0 {
+        let no_face = p.known_face_count == 0 && p.unknown_face_count == 0;
+        if !no_face {
+            continue;
+        }
+        if p.sharpness.unwrap_or(100.0) < 25.0 {
             sug.push(Suggestion {
                 photo: p.clone(),
                 kind: "blurry".into(),
@@ -118,15 +122,7 @@ pub fn cleanup_suggestions(db: &DB) -> Result<Vec<Suggestion>> {
                 reason: "画面模糊且无人脸".into(),
             });
         }
-    }
-
-    // 4) 双低分且无人脸
-    for p in &all {
-        if p.aesthetic.unwrap_or(10.0) < 3.5
-            && p.technical.unwrap_or(10.0) < 3.5
-            && p.known_face_count == 0
-            && p.unknown_face_count == 0
-        {
+        if p.aesthetic.unwrap_or(10.0) < 3.5 && p.technical.unwrap_or(10.0) < 3.5 {
             sug.push(Suggestion {
                 photo: p.clone(),
                 kind: "low_quality".into(),

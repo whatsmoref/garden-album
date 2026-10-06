@@ -23,7 +23,8 @@ use crate::quality;
 use crate::visual::VisualAnalyzer;
 use crate::{events, tags_of_doc};
 
-/// 阶段 1（解码 + CLIP + NIMA）的产物；无副作用所以能并行
+/// 阶段 1（解码 + CLIP + NIMA + 人脸检测）的产物；无 DB 依赖所以能并行
+#[derive(Clone)]
 struct PreResult {
     meta: crate::db::PhotoMeta,
     vec: Vec<f32>,
@@ -33,6 +34,8 @@ struct PreResult {
     w: usize,
     h: usize,
     stem: String,
+    /// 阶段 1.5：SCRFD + ArcFace + 闭眼启发式（纯计算，不碰 DB）
+    faces: Vec<crate::face::FaceRecOut>,
 }
 
 pub struct Indexer {
@@ -46,6 +49,20 @@ pub struct Indexer {
 }
 
 impl Indexer {
+    /// 只查 DB 统计，不加载任何模型（CLI `stats` 用，避免 45s 的 tag 矩阵预热）
+    pub fn with_stats(db: DB) -> Result<Self> {
+        let hub = Arc::new(Hub::new());
+        Ok(Self {
+            db,
+            hub: hub.clone(),
+            visual: VisualAnalyzer::empty(hub),
+            persons: Mutex::new(PersonStore::default()),
+            faces: FacePipeline::lazy(hub)?,
+            ocr: TargetedOcr::new(hub),
+            albums: AlbumEngine::lazy(db_placeholder(&db)?, hub)?,
+        })
+    }
+
     pub fn new(db: DB) -> Result<Self> {
         init_ort();
         let hub = Arc::new(Hub::new());
@@ -141,7 +158,9 @@ impl Indexer {
                 .cloned()
                 .collect();
             // rayon 只捕获 &self.visual（无 DB，无 RefCell）
+            // rayon 只捕获 &visual / &self.faces —— 两者都不含 rusqlite Connection
             let visual = &self.visual;
+            let faces = &self.faces;
             let pre: Vec<(PathBuf, PreResult)> = todo
                 .par_iter()
                 .filter_map(|p| {
@@ -150,11 +169,13 @@ impl Indexer {
                     let vec = visual.embed(&rgb, w, h).ok()?;
                     let tags = visual.top_tags(&vec, 8, None);
                     let q = visual.quality(&rgb, w, h).ok()?;
+                    let fs = faces.analyze(&rgb, w, h, None).unwrap_or_default();
                     Some((
                         p.clone(),
                         PreResult {
                             meta, vec, tags, quality: q, rgb, w, h,
                             stem: p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                            faces: fs,
                         },
                     ))
                 })
@@ -194,15 +215,20 @@ impl Indexer {
                 ("best_face_area", rusqlite::types::Value::Null),
             ],
         )?;
-        let faces = self.faces.analyze(&pre.rgb, pre.w, pre.h, None)?;
-        if !faces.is_empty() {
+        // 人脸检测/对齐/embedding 已在阶段 1 并行算好，这里只做聚类与落库
+        if !pre.faces.is_empty() {
+            let faces = &pre.faces;
             let mut known = 0i64;
-            let mut smiles: Vec<f64> = Vec::new();
             let mut closed = false;
             let mut best_area = 0.0f64;
-            for f in &faces {
-                let (person_id, _sim) = self.persons.lock().assign(&self.db, &f.emb)?;
-                let is_known = self.persons.lock().named().contains_key(&person_id);
+            // 一次拿住锁：assign 与 named 查询必须在同一临界区，
+            // 否则将来并行化时「刚建的簇」会被误判成未命名
+            let mut ps = self.persons.lock();
+            for f in faces {
+                let (person_id, _sim) = ps.assign(&self.db, &f.emb)?;
+                // 注意语义：known = 该脸已归到一个「用户命名过」的人物簇，
+                // 自动名（人物5）不计入。字段名容易误解，故注释在此。
+                let is_known = ps.named().contains_key(&person_id);
                 if is_known {
                     known += 1;
                 }
@@ -211,7 +237,6 @@ impl Indexer {
                     &f.bbox, &f.kps_flat(), &f.emb,
                     0.0, f.eyes_open, f.area,
                 )?;
-                smiles.push(0.0);
                 closed |= !f.eyes_open;
                 best_area = best_area.max(f.area);
             }
@@ -256,7 +281,11 @@ impl Indexer {
         self.db.vectors.add(pid, &pre.vec);
         let row: Photo = self
             .db
-            .query("SELECT * FROM photos WHERE id=?", rusqlite::params![pid], crate::db::row_to_photo)?
+            .query(
+                &format!("SELECT {} FROM photos WHERE id=?", crate::db::PHOTO_COLS),
+                rusqlite::params![pid],
+                crate::db::row_to_photo,
+            )?
             .into_iter()
             .next()
             .ok_or_else(|| anyhow::anyhow!("刚落库的 photo 读不回来"))?;
@@ -299,7 +328,7 @@ pub fn tag_zh(t: &str) -> String {
 }
 
 /// 索引进度摘要
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct IndexStats {
     pub photos: i64,
     pub tags: i64,

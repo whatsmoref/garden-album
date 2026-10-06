@@ -77,6 +77,18 @@ pub struct AlbumEngine {
 }
 
 impl AlbumEngine {
+    /// 不加载 CLIP 文本向量（stats 场景）
+    pub fn lazy(db: DB, hub: Arc<Hub>) -> Result<Self> {
+        let mut albums = Vec::new();
+        for r in db.albums()? {
+            if let Ok(mut spec) = serde_json::from_str::<AlbumSpec>(&r.dsl) {
+                spec.id = r.id;
+                albums.push(spec);
+            }
+        }
+        Ok(Self { db, hub, albums })
+    }
+
     pub fn new(db: DB, hub: Arc<Hub>) -> Result<Self> {
         for a in builtin_albums() {
             let dsl = serde_json::to_string(&a)?;
@@ -153,8 +165,15 @@ impl AlbumEngine {
             return Ok(Vec::new());
         };
         let rows: Vec<Photo> = self.db.query(
-            "SELECT p.* FROM photos p JOIN faces f ON f.photo_id=p.id \
-             WHERE f.person_id=? ORDER BY p.taken_at",
+            &format!(
+                "SELECT p.id, p.path, p.filename, p.taken_at, p.gps_lat, p.gps_lon, p.device, \
+                 p.width, p.height, p.is_screenshot, p.phash, p.aesthetic, p.technical, \
+                 p.sharpness, p.exposure, p.known_face_count, p.unknown_face_count, p.avg_smile, \
+                 p.has_closed_eyes, p.best_face_area, p.event_id, p.burst_id, p.burst_best, \
+                 p.ocr_text, p.added_at \
+                 FROM photos p JOIN faces f ON f.photo_id=p.id WHERE f.person_id=? \
+                 ORDER BY p.taken_at"
+            ),
             rusqlite::params![pid],
             crate::db::row_to_photo,
         )?;

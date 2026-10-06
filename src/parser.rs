@@ -225,8 +225,18 @@ struct TimeParts {
 
 type RuleFn = fn(&str, &mut TimeParts) -> Option<String>;
 
+/// 正则只编译一次：QueryParser 是每次 search 都新建的，热路径上重编译不划算
+static RE_NUMS: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"\d+|[一二两三四五六七八九十]").unwrap());
+static RE_YEAR4: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"((?:19|20)\d{2})").unwrap());
+static RE_MONTH_DAY: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"(\d{1,2})\s*月\s*(\d{1,2})").unwrap());
+static RE_MONTH: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"(\d{1,2})\s*月").unwrap());
+
 fn r_lastdays(s: &str, p: &mut TimeParts) -> Option<String> {
-    let re = Regex::new(r"(\d+|[一二两三四五六七八九十])\s*天").unwrap();
+    let re = &*RE_NUMS;
     let m = re.captures(s)?;
     p.days_back = num_zh(&m[1]).map(|n| n as i64).or(Some(30));
     Some(s.to_string())
@@ -246,9 +256,12 @@ fn r_year(s: &str, p: &mut TimeParts) -> Option<String> {
 }
 
 fn r_yearabs(s: &str, p: &mut TimeParts) -> Option<String> {
-    let re = Regex::new(r"((?:19|20)\d{2})").unwrap();
-    let m = re.captures(s)?;
-    p.year = m[1].parse().ok();
+    let m = RE_YEAR4.captures(s)?;
+    let y: i32 = m[1].parse().ok()?;
+    if !(1900..=2099).contains(&y) {
+        return None;   // "1234 张照片" 不该被当成 1234 年
+    }
+    p.year = Some(y);
     Some(s.to_string())
 }
 
@@ -301,17 +314,23 @@ fn r_half(s: &str, p: &mut TimeParts) -> Option<String> {
 }
 
 fn r_monthday(s: &str, p: &mut TimeParts) -> Option<String> {
-    let re = Regex::new(r"(\d{1,2})\s*月\s*(\d{1,2})").unwrap();
-    let m = re.captures(s)?;
-    p.months = Some(vec![m[1].parse().ok()?]);
+    let m = RE_MONTH_DAY.captures(s)?;
+    let mo: u32 = m[1].parse().ok()?;
+    if !(1..=12).contains(&mo) {
+        return None;
+    }
+    p.months = Some(vec![mo]);
     p.day = Some(m[2].parse().ok()?);
     Some(s.to_string())
 }
 
 fn r_month(s: &str, p: &mut TimeParts) -> Option<String> {
-    let re = Regex::new(r"(\d{1,2})\s*月").unwrap();
-    let m = re.captures(s)?;
-    p.months = Some(vec![m[1].parse().ok()?]);
+    let m = RE_MONTH.captures(s)?;
+    let mo: u32 = m[1].parse().ok()?;
+    if !(1..=12).contains(&mo) {
+        return None;
+    }
+    p.months = Some(vec![mo]);
     Some(s.to_string())
 }
 
@@ -328,6 +347,17 @@ fn rng(s: NaiveDate, e: NaiveDate) -> Range {
 }
 
 fn compose(p: &TimeParts, now: chrono::DateTime<Local>) -> Option<Range> {
+    // 关键：查询里没有任何时间词时必须返回 None。
+    // 否则 `search "海边"` 会被隐式限定成「今年 1/1~12/31」，只召回当年的照片。
+    if p.abs.is_none()
+        && p.days_back.is_none()
+        && p.window.is_none()
+        && p.months.is_none()
+        && p.year.is_none()
+        && p.day.is_none()
+    {
+        return None;
+    }
     if let Some((a, b)) = p.abs {
         return Some(rng(a, b));
     }
@@ -337,9 +367,12 @@ fn compose(p: &TimeParts, now: chrono::DateTime<Local>) -> Option<Range> {
     }
     let year = p.year.unwrap_or_else(|| now.year());
     if let Some((m1, d1, m2, d2)) = p.window {
-        let y2 = if m2 < m1 { year + 1 } else { year };
+        // 跨年窗口（如 跨年 = 12/29~1/3）：如果「现在」已经落在本侧，
+        // 用户想找的是上一个跨年，而不是还没发生的那个。
+        let y1 = if m2 < m1 && now.month() >= m1 { year - 1 } else { year };
+        let y2 = if m2 < m1 { y1 + 1 } else { y1 };
         return Some(rng(
-            NaiveDate::from_ymd_opt(year, m1, d1)?,
+            NaiveDate::from_ymd_opt(y1, m1, d1)?,
             NaiveDate::from_ymd_opt(y2, m2, d2)?,
         ));
     }

@@ -98,7 +98,7 @@ pub fn recompute(db: &DB) -> Result<()> {
                 lons.iter().sum::<f64>() / lons.len() as f64,
             )
         };
-        let tagc = tag_histogram(db, &ids);
+        let tagc = tag_histogram(db, &ids)?;
         let title = make_title(g[0].dt, &city, &tagc);
         let mut devices: Vec<&str> = g.iter().map(|s| s.device.as_str()).filter(|s| !s.is_empty()).collect();
         devices.sort_unstable();
@@ -179,11 +179,17 @@ fn merge_cross_device(segs: &[Seg], persons: &HashMap<i64, HashSet<i64>>) -> Vec
     }
     let mut dsu = Dsu::new(groups.len());
     for i in 0..groups.len() {
+        let a1 = segs[*groups[i].last().unwrap()].dt;
         for j in i + 1..groups.len() {
-            let (a0, a1) = (segs[groups[i][0]].dt, segs[*groups[i].last().unwrap()].dt);
-            let (b0, b1) = (segs[groups[j][0]].dt, segs[*groups[j].last().unwrap()].dt);
-            if a1 < b0 || b1 < a0 {
-                continue; // 时间不重叠
+            // groups 已按时间升序；一旦 b 的起点晚于 a 的终点，后面全部不可能重叠。
+            // 没有这个 break 时是 O(n²)，5000+ 事件会跑成百万级无效比较。
+            let b0 = segs[groups[j][0]].dt;
+            if b0 > a1 {
+                break;
+            }
+            let b1 = segs[*groups[j].last().unwrap()].dt;
+            if a1 < b0 || b1 < segs[groups[i][0]].dt {
+                continue;
             }
             let mut devs: HashSet<&str> = HashSet::new();
             for k in groups[i].iter().chain(groups[j].iter()) {
@@ -241,15 +247,16 @@ fn merge_cross_device(segs: &[Seg], persons: &HashMap<i64, HashSet<i64>>) -> Vec
     out
 }
 
-fn tag_histogram(db: &DB, ids: &[i64]) -> HashMap<String, i64> {
-    let tmap = db.tags_of(ids).unwrap_or_default();
+/// DB 读失败必须往上传播：静默返回空会让事件标题丢掉全部标签
+fn tag_histogram(db: &DB, ids: &[i64]) -> Result<HashMap<String, i64>> {
+    let tmap = db.tags_of(ids)?;
     let mut c: HashMap<String, i64> = HashMap::new();
     for v in tmap.values() {
         for (t, _) in v {
             *c.entry(t.clone()).or_insert(0) += 1;
         }
     }
-    c
+    Ok(c)
 }
 
 fn tag_histogram_top(c: &HashMap<String, i64>, n: usize) -> Vec<String> {
@@ -264,19 +271,21 @@ fn make_title(dt: NaiveDateTime, city: &str, tagc: &HashMap<String, i64>) -> Str
     let total: i64 = tagc.values().sum();
     // 特殊事件要求组内占比 ≥15%：否则一张图带 christmas tree 就会把整个事件标成"圣诞"
     let ratio = |t: &str| -> f64 { tagc.get(t).copied().unwrap_or(0) as f64 / total.max(1) as f64 };
-    let mut special = String::new();
+    // 累积而不是覆盖：跨年婚礼（烟花 + 婚礼）不该只剩最后一个
+    let mut specials: Vec<&str> = Vec::new();
     if ratio("christmas tree") >= 0.15 {
-        special = "🎄圣诞".into();
+        specials.push("🎄圣诞");
     }
     if ratio("wedding") >= 0.15 || ratio("wedding dress") >= 0.15 {
-        special = "💍婚礼".into();
+        specials.push("💍婚礼");
     }
     if ratio("fireworks") >= 0.15 {
-        special = "🎆跨年".into();
+        specials.push("🎆跨年");
     }
     if ratio("cake") >= 0.2 || ratio("birthday party") >= 0.2 {
-        special = "🎂生日".into();
+        specials.push("🎂生日");
     }
+    let special = specials.join("");
     let zh: Vec<String> = tag_histogram_top(tagc, 2)
         .into_iter()
         .map(|t| {

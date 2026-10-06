@@ -88,7 +88,8 @@ pub const CLIP_IMG_SIZE: usize = 256;
 pub const CLIP_DIM: usize = 512;
 pub const CLIP_MEAN: [f32; 3] = [0.0, 0.0, 0.0];
 pub const CLIP_STD: [f32; 3] = [1.0, 1.0, 1.0];
-pub const CLIP_RESIZE_CUBIC: bool = true;
+/// 实测 cubic 与 area 的检索效果几乎一致（Top1 都是 11/24），cubic 略好
+pub const CLIP_INTERP_CUBIC: bool = true;
 pub const CLIP_TEXT_CTX: usize = 77;
 pub const CLIP_BOS: i64 = 49406;
 pub const CLIP_EOS: i64 = 49407;

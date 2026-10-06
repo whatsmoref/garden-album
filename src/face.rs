@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::config as C;
 use crate::db::DB;
-use crate::models::{resize_rgb, Hub};
+use crate::models::{resize_rgb, Hub, Interp};
 
 /// ArcFace 标准 5 点模板
 const ARCFACE_DST: [[f32; 2]; 5] = [
@@ -25,6 +25,16 @@ pub struct PersonStore {
     protos: HashMap<i64, Vec<Vec<f32>>>,
     named: HashMap<i64, String>,
     next_id: i64,
+}
+
+impl Default for PersonStore {
+    fn default() -> Self {
+        Self {
+            protos: std::collections::HashMap::new(),
+            named: std::collections::HashMap::new(),
+            next_id: 1,
+        }
+    }
 }
 
 impl PersonStore {
@@ -122,6 +132,11 @@ impl FacePipeline {
         Ok(Self { hub })
     }
 
+    /// 与 new 等价（SCRFD/ArcFace 本来就是懒加载），保留以便语义清晰
+    pub fn lazy(hub: Arc<Hub>) -> Result<Self> {
+        Self::new(hub)
+    }
+
     /// 对一张图做人脸检测 + 识别 + 统计，返回每张脸的信息
     pub fn analyze(&self, rgb: &[u8], w: usize, h: usize, det_thresh: Option<f32>) -> Result<Vec<FaceRecOut>> {
         let dets = self.hub.scrfd()?.detect(rgb, w, h, det_thresh)?;
@@ -135,7 +150,7 @@ impl FacePipeline {
                 continue;
             };
             let n = C::ARCFACE_INPUT as usize;
-            let small = resize_rgb(&aligned, n, n, n, n, false);
+            let small = resize_rgb(&aligned, n, n, n, n, Interp::Bilinear);
             let emb = arc.embed(&small)?;
             let eyes = eyes_open_estimate(rgb, w, h, &d.kps);
             let (x1, y1, x2, y2) = (d.bbox[0], d.bbox[1], d.bbox[2], d.bbox[3]);
@@ -175,29 +190,31 @@ pub fn align_face(rgb: &[u8], w: usize, h: usize, kps: &[[f32; 2]; 5]) -> Option
     Some(warp_affine(rgb, w, h, &m, C::ARCFACE_INPUT as usize))
 }
 
-/// 求解 [a b tx; -b a ty] 使 Σ|kp_i * M - dst_i|² 最小（Umeyama，2D 相似变换）
+/// 相似变换最小二乘（等价 cv2.estimateAffinePartial2D）
+///
+/// 返回 [a, b, tx, c, d, ty]，正向映射为：
+///   dst_x = a*(src_x - scx) - b*(src_y - scy) + dcx
+///   dst_y = c*(src_x - scx) + d*(src_y - scy) + dcy
+///
+/// 之前这里有个「两轮 LM 细化」的 for 循环，但循环体是
+/// `r00 = na / sc * sc` —— 化简后就是 `na`，输入输出完全相同，是纯 no-op。
+/// 闭式解（Umeyama/Kabsch）本身就够精确，删掉迭代，加单元测试锁死精度。
 fn estimate_similarity(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> Option<[f32; 6]> {
-    let n = 5.0f32;
-    let mut scx = 0.0;
-    let mut scy = 0.0;
-    let mut dcx = 0.0;
-    let mut dcy = 0.0;
+    const N: f32 = 5.0;
+    let (mut scx, mut scy, mut dcx, mut dcy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     for i in 0..5 {
         scx += src[i][0];
         scy += src[i][1];
         dcx += dst[i][0];
         dcy += dst[i][1];
     }
-    scx /= n;
-    scy /= n;
-    dcx /= n;
-    dcy /= n;
-    let mut sxx = 0.0f32;
-    let mut syy = 0.0f32;
-    let mut sxsx = 0.0f32;
-    let mut sxsy = 0.0f32;
-    let mut sysx = 0.0f32;
-    let mut sysy = 0.0f32;
+    scx /= N;
+    scy /= N;
+    dcx /= N;
+    dcy /= N;
+
+    let (mut sxx, mut syy, mut sxsx, mut sxsy, mut sysx, mut sysy) =
+        (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
     for i in 0..5 {
         let (px, py) = (src[i][0] - scx, src[i][1] - scy);
         let (qx, qy) = (dst[i][0] - dcx, dst[i][1] - dcy);
@@ -210,46 +227,17 @@ fn estimate_similarity(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> Option<[f32;
     }
     let den = sxx + syy;
     if den < 1e-6 {
-        return None;
+        return None;   // 5 个点全重合，解不唯一
     }
-    // 对齐 OpenCV estimateAffinePartial2D：相似变换最小二乘
+    // 相似变换最优解：[cosθ*k, -sinθ*k; sinθ*k, cosθ*k]
     let a = (sxsx + sysy) / den;
     let b = (sxsy - sysx) / den;
-    let scale = (a * a + b * b).sqrt();
-    if !(scale > 1e-6) || !scale.is_finite() {
+    if !a.is_finite() || !b.is_finite() {
         return None;
     }
-    let (ca, sa) = (a / scale, b / scale);
-    let (mut r00, mut r01) = (ca * scale, -sa * scale);
-    let (mut r10, mut r11) = (sa * scale, ca * scale);
-    // OpenCV 用 LM 迭代，这里再跑两轮最小二乘细化
-    for _ in 0..2 {
-        let mut num1 = 0.0f32;
-        let mut num2 = 0.0f32;
-        let mut den1 = 0.0f32;
-        for i in 0..5 {
-            let (px, py) = (src[i][0] - scx, src[i][1] - scy);
-            let (qx, qy) = (dst[i][0] - dcx, dst[i][1] - dcy);
-            num1 += px * qx + py * qy;
-            num2 += py * qx - px * qy;
-            den1 += px * px + py * py;
-        }
-        if den1 < 1e-6 {
-            break;
-        }
-        let na = num1 / den1;
-        let nb = num2 / den1;
-        let sc = (na * na + nb * nb).sqrt();
-        if sc > 1e-6 {
-            r00 = na / sc * sc;
-            r01 = -nb / sc * sc;
-            r10 = nb / sc * sc;
-            r11 = na / sc * sc;
-        }
-    }
-    let tx = dcx - (r00 * scx + r01 * scy);
-    let ty = dcy - (r10 * scx + r11 * scy);
-    Some([r00, r01, tx, r10, r11, ty])
+    let tx = dcx - (a * scx - b * scy);
+    let ty = dcy - (b * scx + a * scy);
+    Some([a, -b, tx, b, a, ty])
 }
 
 fn warp_affine(rgb: &[u8], w: usize, h: usize, m: &[f32; 6], n: usize) -> Vec<u8> {
@@ -341,3 +329,81 @@ fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 相似变换的解析解 —— 人脸对齐正确性的唯一客观保证
+    #[test]
+    fn 相似变换_已知解() {
+        for &(deg, k, tx, ty) in &[
+            (0.0f32, 1.0f32, 0.0f32, 0.0f32),
+            (30.0, 1.2, 10.0, -5.0),
+            (-17.0, 0.83, -3.0, 8.0),
+            (90.0, 1.0, 5.0, 5.0),
+            (45.0, 2.5, 0.0, 0.0),
+        ] {
+            let (c, sn) = (deg.to_radians().cos(), deg.to_radians().sin());
+            let src = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [5.0, 5.0]];
+            let dst: [[f32; 2]; 5] = std::array::from_fn(|i| {
+                let (x, y) = (src[i][0], src[i][1]);
+                [
+                    k * (c * x - sn * y) + tx,
+                    k * (sn * x + c * y) + ty,
+                ]
+            });
+            let m = estimate_similarity(&src, &dst).expect("应能解出");
+            assert!(
+                (m[0] - k * c).abs() < 1e-4,
+                "deg={deg} a: {} vs {}",
+                m[0], k * c
+            );
+            assert!(
+                (m[1] + k * sn).abs() < 1e-4,
+                "deg={deg} b: {} vs {}",
+                m[1], -k * sn
+            );
+            assert!((m[2] - tx).abs() < 1e-3, "deg={deg} tx: {} vs {tx}", m[2]);
+            assert!((m[4] - k * c).abs() < 1e-4, "deg={deg} d: {}", m[4]);
+            assert!((m[5] - ty).abs() < 1e-3, "deg={deg} ty: {} vs {ty}", m[5]);
+        }
+    }
+
+    #[test]
+    fn 相似变换_退化输入返回None() {
+        let same = [[1.0f32, 1.0]; 5]; // 5 点全重合
+        assert!(estimate_similarity(&same, &same).is_none());
+    }
+
+    #[test]
+    fn 相似变换_等比无旋转() {
+        let src = [[0.0f32, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [5.0, 5.0]];
+        let dst = [[1.0f32, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0], [15.0, 15.0]];
+        let m = estimate_similarity(&src, &dst).unwrap();
+        assert!((m[0] - 3.0).abs() < 1e-4);
+        assert!(m[1].abs() < 1e-4);
+        assert!(m[2].abs() < 1e-4);
+    }
+
+    #[test]
+    fn 闭眼启发式_人脸区域有效() {
+        // 有纹理的眼部区域 → 睁眼；纯色区域 → 判定不可靠但不应 panic
+        let (w, h) = (64usize, 64);
+        let mut img = vec![10u8; w * h * 3];
+        // 画两只"眼睛"，内部放高频噪声
+        for (ex, ey) in [(20usize, 30usize), (44, 30)] {
+            for y in ey - 4..ey + 4 {
+                for x in ex - 6..ex + 6 {
+                    let i = (y * w + x) * 3;
+                    let v = if (x + y) % 2 == 0 { 240 } else { 15 };
+                    img[i] = v;
+                    img[i + 1] = v;
+                    img[i + 2] = v;
+                }
+            }
+        }
+        let kps = [[20.0, 30.0], [44.0, 30.0], [32.0, 42.0], [24.0, 50.0], [40.0, 50.0]];
+        let _ = eyes_open_estimate(&img, w, h, &kps); // 不 panic 即通过
+    }
+}

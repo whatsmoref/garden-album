@@ -203,8 +203,8 @@ fn main() -> Result<()> {
         }
         Cmd::Stats { json } => {
             let db = DB::open()?;
-            let hub = std::sync::Arc::new(album::models::Hub::new());
-            let ix = indexer::Indexer::new(db)?;
+            // Stats 只读 DB，不需要加载模型（原来建了 hub 却没用，白白构造）
+            let ix = indexer::Indexer::with_stats(db)?;
             let st = ix.stats()?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&st)?);

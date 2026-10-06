@@ -66,7 +66,14 @@ impl SearchEngine {
     }
 
     pub fn search(&self, text: &str, topk: usize) -> Result<Answer> {
-        if let Some(name) = detect_last_meeting(text) {
+        let names: Vec<String> = self
+            .db
+            .persons()?
+            .iter()
+            .filter(|p| !is_auto_name(&p.name))
+            .map(|p| p.name.clone())
+            .collect();
+        if let Some(name) = detect_last_meeting(text, &names) {
             return self.last_meeting(&name);
         }
         let (dsl, chips) = self.parser.parse(text);
@@ -179,7 +186,7 @@ impl SearchEngine {
         let (where_sql, params) = self.filter_sql(dsl)?;
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
         let cand = self.db.query(
-            &format!("SELECT * FROM photos WHERE {where_sql}"),
+            &format!("SELECT {} FROM photos WHERE {where_sql}", crate::db::PHOTO_COLS),
             refs.as_slice(),
             row_to_photo,
         )?;
@@ -253,7 +260,14 @@ impl SearchEngine {
             });
         };
         let me = self.db.person_id_by_name("我")?;
-        let mut sql = "SELECT p.* FROM photos p WHERE p.id IN (SELECT photo_id FROM faces WHERE person_id=?)".to_string();
+        let mut sql = format!(
+            "SELECT p.id, p.path, p.filename, p.taken_at, p.gps_lat, p.gps_lon, p.device, \
+             p.width, p.height, p.is_screenshot, p.phash, p.aesthetic, p.technical, \
+             p.sharpness, p.exposure, p.known_face_count, p.unknown_face_count, p.avg_smile, \
+             p.has_closed_eyes, p.best_face_area, p.event_id, p.burst_id, p.burst_best, \
+             p.ocr_text, p.added_at FROM photos p WHERE p.id IN \
+             (SELECT photo_id FROM faces WHERE person_id=?)"
+        );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(pid)];
         if let Some(m) = me {
             if m != pid {
@@ -269,6 +283,8 @@ impl SearchEngine {
                 message: format!("没有找到和「{name}」的合照"),
             });
         };
+        // 注意语义：这是「该人出现过的照片数」，不是「与我的合照数」。
+        // 真正的合照数是下面那条 SQL 已经过滤过的 len(photo)。
         let total = self.db.query(
             "SELECT COUNT(DISTINCT photo_id) c FROM faces WHERE person_id=?",
             rusqlite::params![pid],
@@ -296,28 +312,30 @@ fn is_auto_name(n: &str) -> bool {
 }
 
 /// "上次见爸爸是什么时候" → Some("爸爸")
-fn detect_last_meeting(text: &str) -> Option<String> {
+///
+/// 不能用 `char::is_alphanumeric()` 截名字：它对中文返回 true（Unicode Letter），
+/// "上次见宝宝在干什么" 会截出 "宝宝在干什么"，查不到人。
+/// 改成「RELATION / 已命名人物的最长前缀匹配」。
+fn detect_last_meeting(text: &str, person_names: &[String]) -> Option<String> {
     let t = text.trim();
     for marker in ["上次见", "最近一次见", "上次遇到", "上次碰到", "上次见到"] {
-        if let Some(i) = t.find(marker) {
-            let rest = &t[i + marker.len()..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| {
-                    let s = *c;
-                    s.is_alphanumeric() || RELATION.iter().any(|(k, _)| k.contains(s))
-                })
-                .collect();
-            if !name.is_empty() {
-                // 去掉时间后缀
-                let name = name
-                    .split("是")
-                    .next()
-                    .unwrap_or(&name)
-                    .trim()
-                    .to_string();
-                return Some(name);
+        let Some(i) = t.find(marker) else { continue };
+        let rest = &t[i + marker.len()..];
+        let mut best: Option<&str> = None;
+        for (k, _) in RELATION.iter() {
+            if rest.starts_with(k) && best.map_or(true, |b| k.chars().count() > b.chars().count()) {
+                best = Some(k);
             }
+        }
+        for n in person_names {
+            if rest.starts_with(n.as_str())
+                && best.map_or(true, |b| n.chars().count() > b.chars().count())
+            {
+                best = Some(n.as_str());
+            }
+        }
+        if let Some(name) = best {
+            return Some(name.to_string());
         }
     }
     None
@@ -341,8 +359,27 @@ mod tests {
 
     #[test]
     fn 识别上次见问句() {
-        assert_eq!(detect_last_meeting("上次见爸爸是什么时候"), Some("爸爸".into()));
-        assert_eq!(detect_last_meeting("最近一次见到妈妈"), Some("妈妈".into()));
-        assert_eq!(detect_last_meeting("海边"), None);
+        let n: Vec<String> = vec!["小林".into()];
+        assert_eq!(detect_last_meeting("上次见爸爸是什么时候", &n), Some("爸爸".into()));
+        assert_eq!(detect_last_meeting("最近一次见到妈妈", &n), Some("妈妈".into()));
+        assert_eq!(detect_last_meeting("上次见到小林", &n), Some("小林".into()));
+        assert_eq!(detect_last_meeting("海边", &n), None);
+    }
+
+    #[test]
+    fn 上次见_不吞掉后续中文() {
+        // 回归：旧实现用 is_alphanumeric 会截出 "宝宝在干什么"
+        let n: Vec<String> = vec![];
+        assert_eq!(
+            detect_last_meeting("上次见宝宝在干什么", &n),
+            Some("宝宝".into())
+        );
+    }
+
+    #[test]
+    fn 关系词最长前缀优先() {
+        // RELATION 里同时有 "爷爷"/"爷爷"，以及更长的复合词，取最长
+        let n: Vec<String> = vec![];
+        assert_eq!(detect_last_meeting("上次见外公的时候", &n), Some("外公".into()));
     }
 }

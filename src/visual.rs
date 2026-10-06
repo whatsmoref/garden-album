@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use crate::config as C;
-use crate::models::{resize_rgb, Hub};
+use crate::models::{resize_rgb, Hub, Interp};
 
 pub struct VisualAnalyzer {
     hub: Arc<Hub>,
@@ -14,6 +14,15 @@ pub struct VisualAnalyzer {
 }
 
 impl VisualAnalyzer {
+    /// 不预热 tag 矩阵（只用于 stats 这类不需要检索的场景）
+    pub fn empty(hub: Arc<Hub>) -> Self {
+        Self {
+            hub,
+            tag_names: Vec::new(),
+            tag_mat: Vec::new(),
+        }
+    }
+
     pub fn new(hub: Arc<Hub>) -> Result<Self> {
         Self::with_tags(hub, crate::vocab::TAG_VOCAB.iter().map(|s| s.to_string()).collect())
     }
@@ -34,6 +43,10 @@ impl VisualAnalyzer {
 
     pub fn embed(&self, img: &[u8], w: usize, h: usize) -> Result<Vec<f32>> {
         self.hub.clip()?.embed_image(img, w, h)
+    }
+
+    pub fn is_ready(&self) -> bool {
+        !self.tag_mat.is_empty()
     }
 
     /// 零样本标签，取分数超过阈值的 top-k
@@ -82,7 +95,7 @@ pub fn sharpness_exposure(rgb: &[u8], w: usize, h: usize) -> (f64, f64) {
     } else {
         (w, h)
     };
-    let small = resize_rgb(rgb, w, h, gw, gh, false);
+    let small = resize_rgb(rgb, w, h, gw, gh, Interp::Area);
     let mut g = vec![0f32; gw * gh];
     for i in 0..gw * gh {
         g[i] = 0.299 * small[i * 3] as f32 + 0.587 * small[i * 3 + 1] as f32 + 0.114 * small[i * 3 + 2] as f32;

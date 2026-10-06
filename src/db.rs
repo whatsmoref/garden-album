@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// `SELECT *` 的列顺序一旦在 SCHEMA 里变动就会静默错位（Photo.from_row 按序号取）。
+/// 这里显式列出列名，`all_photos` / `photos_by_ids` 都用它。
+pub const PHOTO_COLS: &str = "id, path, filename, taken_at, gps_lat, gps_lon, device, \
+width, height, is_screenshot, phash, aesthetic, technical, sharpness, exposure, \
+known_face_count, unknown_face_count, avg_smile, has_closed_eyes, best_face_area, \
+event_id, burst_id, burst_best, ocr_text, added_at";
+
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS photos(
   id INTEGER PRIMARY KEY, path TEXT UNIQUE, filename TEXT,
@@ -147,14 +154,15 @@ impl VectorStore {
         w.write_all(b"ALB1")?;
         w.write_all(&(g.ids.len() as u32).to_le_bytes())?;
         w.write_all(&(self.dim as u32).to_le_bytes())?;
-        let mut buf = vec![0f32; self.dim];
+        // 逐分量写小端字节：不用 unsafe from_raw_parts，
+        // 否则 big-endian 平台上与 load() 的 from_le_bytes 不兼容
+        let mut buf = [0u8; 4];
         for (i, id) in g.ids.iter().enumerate() {
             w.write_all(&id.to_le_bytes())?;
-            buf.copy_from_slice(&g.vecs[i]);
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4)
-            };
-            w.write_all(bytes)?;
+            for v in &g.vecs[i] {
+                buf.copy_from_slice(&v.to_le_bytes());
+                w.write_all(&buf)?;
+            }
         }
         w.flush()?;
         Ok(())
@@ -170,6 +178,15 @@ impl VectorStore {
         }
         let count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        if dim != self.dim {
+            // 换模型（CLIP_DIM 变了）却沿用旧文件，会用错误的维度解释每一行，
+            // 检索结果全是噪声且没有任何报错 —— 必须显式拒绝
+            anyhow::bail!(
+                "向量文件维度 {dim} 与当前 CLIP_DIM {} 不符，请删除 {} 重新索引",
+                self.dim,
+                path.display()
+            );
+        }
         let stride = 8 + dim * 4;
         let mut g = self.inner.write();
         for i in 0..count {
@@ -269,7 +286,7 @@ pub struct EventRow {
     pub top_tags: String,
 }
 
-/// `SELECT *` 的列顺序必须与 SCHEMA 里 photos 的定义严格一致
+/// 按序号取列，必须与 `PHOTO_COLS` 的顺序严格一致（所有查询已改用显式列名）
 pub fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
     Ok(Photo {
         id: r.get(0)?, path: r.get(1)?, filename: r.get(2)?,
@@ -423,7 +440,7 @@ impl DB {
     }
 
     pub fn all_photos(&self) -> Result<Vec<Photo>> {
-        self.query("SELECT * FROM photos ORDER BY id", [], row_to_photo)
+        self.query(&format!("SELECT {PHOTO_COLS} FROM photos ORDER BY id"), [], row_to_photo)
     }
 
     pub fn photos_by_ids(&self, ids: &[i64]) -> Result<HashMap<i64, Photo>> {
@@ -433,7 +450,7 @@ impl DB {
         }
         for chunk in ids.chunks(500) {
             let qs: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
-            let sql = format!("SELECT * FROM photos WHERE id IN ({})", qs.join(","));
+            let sql = format!("SELECT {PHOTO_COLS} FROM photos WHERE id IN ({})", qs.join(","));
             let rows: Vec<Photo> = self.query(&sql, rusqlite::params_from_iter(chunk), row_to_photo)?;
             for r in rows {
                 out.insert(r.id, r);
@@ -696,7 +713,12 @@ impl DB {
 
     pub fn album_photos(&self, aid: i64, limit: usize) -> Result<Vec<Photo>> {
         self.query(
-            "SELECT p.* FROM album_photos ap JOIN photos p ON p.id=ap.photo_id \
+            "SELECT p.id, p.path, p.filename, p.taken_at, p.gps_lat, p.gps_lon, p.device, \
+             p.width, p.height, p.is_screenshot, p.phash, p.aesthetic, p.technical, \
+             p.sharpness, p.exposure, p.known_face_count, p.unknown_face_count, p.avg_smile, \
+             p.has_closed_eyes, p.best_face_area, p.event_id, p.burst_id, p.burst_best, \
+             p.ocr_text, p.added_at \
+             FROM album_photos ap JOIN photos p ON p.id=ap.photo_id \
              WHERE ap.album_id=? ORDER BY p.taken_at DESC LIMIT ?",
             rusqlite::params![aid, limit as i64],
             row_to_photo,
@@ -718,7 +740,8 @@ impl DB {
 
     pub fn events(&self, limit: usize) -> Result<Vec<EventRow>> {
         self.query(
-            "SELECT * FROM events ORDER BY start DESC LIMIT ?",
+            "SELECT id, start, end, title, city, photo_count, device_count, top_tags \
+             FROM events ORDER BY start DESC LIMIT ?",
             rusqlite::params![limit as i64],
             row_to_event,
         )
@@ -770,7 +793,7 @@ impl DB {
 
     pub fn photos_in_burst(&self, bid: i64) -> Result<Vec<Photo>> {
         self.query(
-            "SELECT * FROM photos WHERE burst_id=? ORDER BY id",
+            &format!("SELECT {PHOTO_COLS} FROM photos WHERE burst_id=? ORDER BY id"),
             rusqlite::params![bid],
             row_to_photo,
         )

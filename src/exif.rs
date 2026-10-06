@@ -251,24 +251,23 @@ fn ascii(v: &[Val]) -> Option<String> {
 
 
 
+/// EXIF 的 GPS 存的是三个有理数：[度, 分, 秒]
+/// 注意是 deg + min/60 + sec/3600，不能当成三个加数（30+15+30=75）
 fn rationals3(v: &[Val]) -> Option<f64> {
-    match v.first() {
-        Some(Val::Rationals(r)) if r.len() >= 3 => {
-            let mut d = 0.0;
-            for (n, den) in r.iter().take(3) {
-                if *den == 0 {
-                    return None;
-                }
-                d += *n as f64 / *den as f64;
-            }
-            // EXIF 存的是 [度, 分, 秒]
-            let (dd, rest) = (d.trunc(), d - d.trunc());
-            let min = (rest * 60.0).trunc();
-            let sec = (rest * 60.0 - min) * 60.0;
-            Some(dd + min / 60.0 + sec / 3600.0)
-        }
-        _ => None,
+    let Some(Val::Rationals(r)) = v.first() else {
+        return None;
+    };
+    if r.len() < 3 {
+        return None;
     }
+    let mut parts = [0f64; 3];
+    for (i, (n, d)) in r.iter().take(3).enumerate() {
+        if *d == 0 {
+            return None;
+        }
+        parts[i] = *n as f64 / *d as f64;
+    }
+    Some(parts[0] + parts[1] / 60.0 + parts[2] / 3600.0)
 }
 
 pub fn parse_tiff(tiff: &[u8]) -> Result<ExifData> {
@@ -443,6 +442,26 @@ mod tests {
         let e = parse_tiff(find_tiff_block(&j).unwrap()).unwrap();
         assert_eq!(e.date_time_original, None);
         assert_eq!(e.best_datetime(), Some("2024:07:13 09:54:00"));
+    }
+
+    #[test]
+    fn GPS度分秒不是三个加数() {
+        // 30°15'30" 必须算成 30.258333...，不是 75
+        let v = [Val::Rationals(vec![(30, 1), (15, 1), (30, 1)])];
+        let d = rationals3(&v).unwrap();
+        assert!((d - 30.2583333).abs() < 1e-6, "得到 {d}");
+
+        // 上海外滩 ≈ 31°14'12" N, 121°29'24" E
+        let lat = [Val::Rationals(vec![(31, 1), (14, 1), (12, 1)])];
+        assert!((rationals3(&lat).unwrap() - 31.2366666).abs() < 1e-6);
+
+        // 分母为 0 必须返回 None 而不是 inf
+        let bad = [Val::Rationals(vec![(31, 0), (14, 1), (12, 1)])];
+        assert!(rationals3(&bad).is_none());
+
+        // 少于 3 项
+        let short = [Val::Rationals(vec![(31, 1), (14, 1)])];
+        assert!(rationals3(&short).is_none());
     }
 
     #[test]

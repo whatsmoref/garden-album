@@ -70,7 +70,8 @@ pub fn extract_metadata(path: &Path) -> Result<PhotoMeta> {
                 dt.format("%Y-%m-%d %H:%M:%S").to_string()
             });
     }
-    if let Ok((rgb, w, h)) = load_image_rgb(path, 0) {
+    // phash 内部先降采样到 32×32，给 512 足够；传 0 会触发全尺寸解码，白白多花一次 IO+解码
+    if let Ok((rgb, w, h)) = load_image_rgb(path, 512) {
         out.phash = Some(phash(&rgb, w, h));
     }
     out.is_screenshot = is_screenshot(path, out.width, out.height, has_cam);
