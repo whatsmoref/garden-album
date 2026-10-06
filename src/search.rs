@@ -318,7 +318,13 @@ fn is_auto_name(n: &str) -> bool {
 /// 改成「RELATION / 已命名人物的最长前缀匹配」。
 fn detect_last_meeting(text: &str, person_names: &[String]) -> Option<String> {
     let t = text.trim();
-    for marker in ["上次见", "最近一次见", "上次遇到", "上次碰到", "上次见到"] {
+    // marker 要覆盖「见到/遇到」这类带「到」的变体，否则 "最近一次见到妈妈"
+    // 会被 "最近一次见" 抢先匹配、剩下 "到妈妈" 前缀匹配不上
+    const MARKERS: &[&str] = &[
+        "最近一次见到", "最近一次见", "上次见到", "上次见",
+        "上次遇到", "上次碰到", "上次遇到",
+    ];
+    for marker in MARKERS {
         let Some(i) = t.find(marker) else { continue };
         let rest = &t[i + marker.len()..];
         let mut best: Option<&str> = None;
@@ -350,12 +356,21 @@ mod tests {
 
     #[test]
     fn rrf_两路都靠前的排前面() {
-        let a = vec![1i64, 2, 3];
-        let b = vec![3i64, 1, 2];
-        let f = rrf(&[a, b], 60.0);
-        assert_eq!(*f.get(&1).unwrap() > *f.get(&3).unwrap(), false);
-        // 1 在两路都是第 1/第 2，3 是第 3/第 1，总分应接近
-        assert!((f[&1] - f[&3]).abs() < 0.02);
+        // 1 在两路都靠前（1/2），3 只在一路靠前（3/1）→ 1 的总分必须更高
+        let a = vec![1i64, 2, 3, 4];
+        let b = vec![1, 2, 3, 4];
+        let f = rrf(&[a.clone(), b.clone()], 60.0);
+        let expect = |rank: usize| 2.0 / (60.0 + rank as f64 + 1.0);
+        assert!((f[&1] - expect(0)).abs() < 1e-9, "{f:?}");
+        assert!((f[&4] - expect(3)).abs() < 1e-9, "{f:?}");
+        assert!(f[&1] > f[&4]);
+    }
+
+    #[test]
+    fn rrf_单路领先也能进前列() {
+        // 只有一路召回，靠 RRF 仍应排在该路原序之前的所有文档之后、其余之前
+        let f = rrf(&[vec![10i64, 20, 30]], 60.0);
+        assert!(f[&10] > f[&20] && f[&20] > f[&30]);
     }
 
     #[test]

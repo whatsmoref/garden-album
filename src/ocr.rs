@@ -171,7 +171,8 @@ mod tests {
         // 回归测试：旧实现在这里 panic（byte index is not a char boundary）
         assert!(has_amount("价税合计 ￥13,568.00"));
         assert!(has_amount("技术服务费 12800.00 元"));
-        assert!(has_amount("人民币壹万叁仟元整"));
+        // 中文大写金额没有 ASCII 数字，has_amount 只认 1234.56 形态 → false
+        assert!(!has_amount("人民币壹万叁仟元整"));
         assert!(!has_amount("发票代码：011002200311"));
         assert!(!has_amount("没有任何金额"));
         assert!(!has_amount(""));

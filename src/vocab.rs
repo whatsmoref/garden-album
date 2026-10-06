@@ -20,8 +20,8 @@ pub static TAG_VOCAB: &[&str] = &[
     "barbecue", "noodles", "coffee", "milk tea", "wine", "beer", "car", "bicycle", "motorcycle",
     "bus", "truck", "laptop", "television", "camera", "book", "newspaper", "toy", "balloon",
     "flower bouquet", "roses", "luggage", "lantern", "fireworks", "document", "invoice", "receipt",
-    "ticket", "boarding pass", "menu", "poster", "whiteboard", "screenshot", "chat screenshot",
-    "id card", "passport", "banknote", "coin", "painting", "calligraphy", "map",
+    "ticket", "boarding pass", "menu", "poster", "whiteboard", "blackboard", "screenshot",
+    "chat screenshot", "id card", "passport", "banknote", "coin", "painting", "calligraphy", "map",
 ];
 
 pub static ZH2TAG: &[(&str, &str)] = &[
@@ -137,7 +137,6 @@ pub static DOC_TAGS: &[&str] = &[
 
 
 #[cfg(test)]
-#[allow(non_snake_case)] // 测试名用中文更好读
 mod tests {
     use super::*;
 

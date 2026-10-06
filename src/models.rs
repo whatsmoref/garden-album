@@ -745,22 +745,43 @@ pub enum Interp {
     Bicubic,
 }
 
-/// Catmull-Rom 权重（OpenCV INTER_CUBIC 用 a=-0.75 参数化）
+/// 三次卷积核（OpenCV INTER_CUBIC 的 a = -0.75），4 邻域权重 + 归一化。
+///
+/// 注意：不能用「Catmull-Rom 四点插值」那套公式（w0=(A+2)t³-(A+3)t²+1 …），
+/// 它在 t=0 处给出 (0.5,0,0,0.5) 而不是 (0,1,0,0)，导致同尺寸缩放不再是恒等。
 #[inline]
-fn cubic_weights(t: f32) -> [f32; 4] {
+fn cubic_kernel(t: f32) -> f32 {
     const A: f32 = -0.75;
-    let x = t.abs();
-    let x2 = x * x;
-    let x3 = x2 * x;
-    let w0 = ((A + 2.0) * x3 - (A + 3.0) * x2 + 1.0) * 0.5;
-    let w1 = ((A * x - 5.0 * A) * x3 + (8.0 * A + 8.0) * x2 - (4.0 * A + 8.0) * x) * 0.5;
-    let w2 = ((-A - 2.0) * x3 + (3.0 * A + 3.0) * x2 + 3.0 * A * x) * 0.5;
-    let w3 = 1.0 - w0 - w1 - w2;
-    if t < 0.0 {
-        [w3, w2, w1, w0]
+    let t = t.abs();
+    let t2 = t * t;
+    let t3 = t2 * t;
+    if t <= 1.0 {
+        (A + 2.0) * t3 - (A + 3.0) * t2 + 1.0
+    } else if t < 2.0 {
+        A * t3 - 5.0 * A * t2 + 8.0 * A * t - 4.0 * A
     } else {
-        [w0, w1, w2, w3]
+        0.0
     }
+}
+
+/// 取 (floor(x)-1 .. floor(x)+2) 四个采样点的归一化权重
+#[inline]
+fn cubic_weights(frac: f32) -> [f32; 4] {
+    let mut w = [
+        cubic_kernel(frac + 1.0),
+        cubic_kernel(frac),
+        cubic_kernel(frac - 1.0),
+        cubic_kernel(frac - 2.0),
+    ];
+    let s: f32 = w.iter().sum();
+    if s.abs() > 1e-6 {
+        for v in w.iter_mut() {
+            *v /= s;
+        }
+    } else {
+        w = [0.0, 1.0, 0.0, 0.0];
+    }
+    w
 }
 
 pub fn resize_rgb(
@@ -807,6 +828,7 @@ pub fn resize_rgb(
         for y in 0..dh {
             let fypos = (y as f32 + 0.5) * fy - 0.5;
             let y0 = fypos.floor() as isize;
+            // 采样点是 y0-1, y0, y0+1, y0+2（4 邻域），与 cubic_kernel 的偏移一致
             let wy = cubic_weights(fypos - y0 as f32);
             for x in 0..dw {
                 let fxpos = (x as f32 + 0.5) * fx - 0.5;
