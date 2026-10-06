@@ -19,41 +19,29 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache ONNX Runtime build
-        id: ort-cache
-        uses: actions/cache@v4
-        with:
-          path: /opt/ort-install
-          key: ort-1.22.0-x64-linux-glibc235
-
-      - name: Build ONNX Runtime from source
-        if: steps.ort-cache.outputs.cache-hit != 'true'
+      - name: Install ONNX Runtime (prebuilt wheel)
         run: |
           set -euo pipefail
-          # eigen3 的 CMake FetchContent 在 CI 上会网络失败，直接用 apt 的
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build libeigen3-dev
-          cd /tmp
-          git clone --depth 1 -b v1.22.0 --recursive https://github.com/microsoft/onnxruntime.git
-          cd onnxruntime
-          # eigen3 的 FetchContent 指向 gitlab，CI 上会失败；
-          # 用 apt 的 libeigen3-dev + onnxruntime_USE_PREINSTALLED_EIGEN 绕过
-          ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
-            --update --compile_no_warning_as_error \
-            --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
-                                       onnxruntime_USE_OPENMP=OFF \
-                                       onnxruntime_USE_PREINSTALLED_EIGEN=ON \
-                                       eigen_SOURCE_PATH=/usr/include/eigen3 \
-                                       ORT_LIB_LOCATION=/opt/ort-install/lib
+          # pip 的 onnxruntime wheel 里带的 .so 只需要 GLIBC_2.27，
+          # 而 ort crate 的 download-binaries 下的是 glibc 2.39 构建 —— 两者不同源。
+          # 所以：自己下 wheel、取出 .so、放到 ORT_LIB_LOCATION，让 ort-sys 静态链它。
+          pip download 'onnxruntime==1.23.2' -d /tmp/ortwhl --no-deps -q
           mkdir -p /opt/ort-install/lib
-          cp build/Linux/Release/libonnxruntime.so* /opt/ort-install/lib/
-          cp -r include /opt/ort-install/
+          python3 - <<'PYEOF'
+          import zipfile, glob, shutil, os
+          w = glob.glob('/tmp/ortwhl/*.whl')[0]
+          z = zipfile.ZipFile(w)
+          for n in z.namelist():
+              if n.endswith('libonnxruntime.so.1.23.2') or n.endswith('libonnxruntime_providers_shared.so'):
+                  dst = '/opt/ort-install/lib/' + os.path.basename(n)
+                  with z.open(n) as src, open(dst, 'wb') as out:
+                      shutil.copyfileobj(src, out)
+                  print('extracted', dst, os.path.getsize(dst))
+          PYEOF
+          ln -sf /opt/ort-install/lib/libonnxruntime.so.1.23.2 /opt/ort-install/lib/libonnxruntime.so
           ldconfig
-
-      - name: Export ORT location
-        run: |
-          echo "ORT_LIB_LOCATION=/opt/ort-install/lib" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=/opt/ort-install/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "--- so 需要的最高 glibc 符号 ---"
+          objdump -T /opt/ort-install/lib/libonnxruntime.so.1.23.2 | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
 
       - name: Build release
         run: cargo build --release
@@ -98,29 +86,23 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install ONNX Runtime
+      - name: Install ONNX Runtime (prebuilt wheel)
         run: |
           set -euo pipefail
-          # 测试只需要能链接，不需要完整构建参数
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libonnxruntime-dev || {
-            echo "fallback: 从 python wheel 取 .so"
-            pip download 'onnxruntime==1.22.0' -d /tmp/ortwhl --no-deps -q
-            mkdir -p /opt/ort-install/lib
-            python3 - <<'EOF'
-          import zipfile, glob
+          pip download 'onnxruntime==1.23.2' -d /tmp/ortwhl --no-deps -q
+          mkdir -p /opt/ort-install/lib
+          python3 - <<'PYEOF'
+          import zipfile, glob, shutil, os
           w = glob.glob('/tmp/ortwhl/*.whl')[0]
-          zipfile.ZipFile(w).extractall('/opt/ortwhl/x')
-          for f in glob.glob('/opt/ortwhl/x/**/*.so*', recursive=True):
-              if 'onnxruntime' in f:
-                  import shutil, os
-                  shutil.copy(f, '/opt/ort-install/lib/')
-          print(os.listdir('/opt/ort-install/lib'))
-          EOF
-            ldconfig
-          }
-          sudo cp -n /usr/local/lib/libonnxruntime.so* /usr/local/lib/ 2>/dev/null || true
-          sudo ldconfig
+          z = zipfile.ZipFile(w)
+          for n in z.namelist():
+              if 'libonnxruntime.so' in n:
+                  dst = '/opt/ort-install/lib/' + os.path.basename(n)
+                  with z.open(n) as src, open(dst, 'wb') as out:
+                      shutil.copyfileobj(src, out)
+          PYEOF
+          ln -sf /opt/ort-install/lib/libonnxruntime.so.1.23.2 /opt/ort-install/lib/libonnxruntime.so
+          ldconfig
 
       - name: cargo test
         run: cargo test --release
