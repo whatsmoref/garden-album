@@ -268,6 +268,65 @@ pub struct EventRow {
     pub top_tags: String,
 }
 
+/// `SELECT *` 的列顺序，必须与 SCHEMA 里 photos 的定义严格一致
+impl rusqlite::FromRow for Photo {
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Photo {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            filename: row.get(2)?,
+            taken_at: row.get(3)?,
+            gps_lat: row.get(4)?,
+            gps_lon: row.get(5)?,
+            device: row.get(6)?,
+            width: row.get(7)?,
+            height: row.get(8)?,
+            is_screenshot: row.get(9)?,
+            phash: row.get(10)?,
+            aesthetic: row.get(11)?,
+            technical: row.get(12)?,
+            sharpness: row.get(13)?,
+            exposure: row.get(14)?,
+            known_face_count: row.get(15)?,
+            unknown_face_count: row.get(16)?,
+            avg_smile: row.get(17)?,
+            has_closed_eyes: row.get(18)?,
+            best_face_area: row.get(19)?,
+            event_id: row.get(20)?,
+            burst_id: row.get(21)?,
+            burst_best: row.get(22)?,
+            ocr_text: row.get(23)?,
+            added_at: row.get(24)?,
+            tags: Vec::new(),
+        })
+    }
+}
+
+impl rusqlite::FromRow for EventRow {
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(EventRow {
+            id: row.get(0)?,
+            start: row.get(1)?,
+            end: row.get(2)?,
+            title: row.get(3)?,
+            city: row.get(4)?,
+            photo_count: row.get(5)?,
+            device_count: row.get(6)?,
+            top_tags: row.get(7)?,
+        })
+    }
+}
+
+impl rusqlite::FromRow for AlbumRow {
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(AlbumRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            dsl: row.get(2)?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumRow {
     pub id: i64,
@@ -575,25 +634,25 @@ impl DB {
     }
 
     pub fn faces_of_photo(&self, photo_id: i64) -> Result<Vec<FaceRec>> {
-        self.query(
-            "SELECT id, photo_id, person_id, bbox, kps, smile, eyes_open, face_area \
-             FROM faces WHERE photo_id=?",
-            rusqlite::params![photo_id],
-        )
-        .map(|rows: Vec<(i64, i64, i64, String, String, Option<f64>, i64, Option<f64>)>| {
-            rows.into_iter()
-                .map(|(id, pid, per, bbox, kps, smile, eyes, area)| FaceRec {
-                    id,
-                    photo_id: pid,
-                    person_id: per,
-                    bbox: parse_f32_vec(&bbox),
-                    kps: parse_f32_vec(&kps),
-                    smile: smile.unwrap_or(0.0),
-                    eyes_open: eyes != 0,
-                    face_area: area.unwrap_or(0.0),
-                })
-                .collect()
-        })
+        let rows: Vec<(i64, i64, i64, String, String, Option<f64>, i64, Option<f64>)> = self
+            .query(
+                "SELECT id, photo_id, person_id, bbox, kps, smile, eyes_open, face_area \
+                 FROM faces WHERE photo_id=?",
+                rusqlite::params![photo_id],
+            )?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, pid, per, bbox, kps, smile, eyes, area)| FaceRec {
+                id,
+                photo_id: pid,
+                person_id: per,
+                bbox: parse_f32_vec(&bbox),
+                kps: parse_f32_vec(&kps),
+                smile: smile.unwrap_or(0.0),
+                eyes_open: eyes != 0,
+                face_area: area.unwrap_or(0.0),
+            })
+            .collect())
     }
 
     // ---------- FTS5 (BM25) ----------
