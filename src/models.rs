@@ -284,8 +284,8 @@ impl Scrfd {
                 let stride_f = *stride as f32;
                 let cx = (anchor % side) as f32 * stride_f;
                 let cy = (anchor / side) as f32 * stride_f;
-                let d: &[f32] = &brow[j];
-                let k: &[f32] = &krow[j];
+                let d: &[f32] = brow[j].as_slice();
+                let k: &[f32] = krow[j].as_slice();
                 // bbox/kps 导出时已除以 stride，乘回原图尺度
                 boxes_all.push([
                     cx - d[0] * stride_f,
