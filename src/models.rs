@@ -427,17 +427,19 @@ impl Det {
             }
         }
         let t = f32_tensor(&[1, 3, S, S], plane)?;
-        let mut sess = self.sess.lock();
-        let outs = sess.run(ort::inputs![t])?;
-        let (shape, data) = outs[0].try_extract_tensor::<f32>()?;
-        let (ow, oh) = if shape.len() >= 2 {
-            (shape[shape.len() - 2] as usize, shape[shape.len() - 1] as usize)
-        } else {
-            (S, S)
+        // 先在锁内把概率图拷出来（Shape 借用了 outs，不能带出作用域）
+        let prob = {
+            let mut sess = self.sess.lock();
+            let outs = sess.run(ort::inputs![t])?;
+            let (shape, data) = outs[0].try_extract_tensor::<f32>()?;
+            let (ow, oh) = if shape.len() >= 2 {
+                (shape[shape.len() - 2] as usize, shape[shape.len() - 1] as usize)
+            } else {
+                (S, S)
+            };
+            (data[..(ow * oh).min(data.len())].to_vec(), ow, oh)
         };
-        // data 借用了 outs，必须先拷出来再放锁
-        let prob = data[..(ow * oh).min(data.len())].to_vec();
-        drop(sess);
+        let (prob, ow, oh) = prob;
         Ok(unclip_boxes(&prob, ow, oh, w, h, thresh, box_thresh))
     }
 }
