@@ -110,11 +110,17 @@ jobs:
                   with z.open(n) as src, open(dst, 'wb') as out:
                       shutil.copyfileobj(src, out)
           PYEOF
-          ln -sf /opt/ort-install/lib/libonnxruntime.so.1.23.2 /opt/ort-install/lib/libonnxruntime.so
+          ln -sf /opt/ort-install/lib/libonnxruntime.so.1.23.2 /opt/ort-install/lib/libonnxruntime.so.1
+          ln -sf /opt/ort-install/lib/libonnxruntime.so.1 /opt/ort-install/lib/libonnxruntime.so
           sudo ldconfig
+          ls -la /opt/ort-install/lib
+          # 确认 runner 上真的能 dlopen 成功
+          LD_LIBRARY_PATH=/opt/ort-install/lib python3 -c "import ctypes; ctypes.CDLL('/opt/ort-install/lib/libonnxruntime.so'); print('dlopen ok')"
 
       - name: cargo test
-        run: cargo test --release -- --nocapture
+        run: |
+          set -euo pipefail
+          cargo test --release -- --nocapture
         env:
           ORT_LIB_LOCATION: /opt/ort-install/lib
           ORT_PREFER_DYNAMIC_LINK: "1"
