@@ -11,7 +11,7 @@ use crate::db::PhotoMeta;
 use crate::exif;
 
 /// 高速解码：返回 RGB u8 的 HWC 缓冲（不含 stride 填充）
-pub fn load_image_rgb(path: &Path, max_side: u32) -> Result<(Vec<u8>, u32, u32)> {
+pub fn load_image_rgb(path: &Path, max_side: u32) -> Result<(Vec<u8>, usize, usize)> {
     let img = ImageReader::open(path)
         .with_guessed_format()?
         .decode()?;
@@ -25,9 +25,9 @@ pub fn load_image_rgb(path: &Path, max_side: u32) -> Result<(Vec<u8>, u32, u32)>
         let nh = ((h0 as f64 * scale).round() as u32).max(1);
         // area 采样，对齐 OpenCV INTER_AREA
         let small = image::imageops::resize(&rgb, nw, nh, image::imageops::FilterType::Triangle);
-        return Ok((small.into_raw(), nw, nh));
+        return Ok((small.into_raw(), nw as usize, nh as usize));
     }
-    Ok((rgb.into_raw(), w0, h0))
+    Ok((rgb.into_raw(), w0 as usize, h0 as usize))
 }
 
 /// 原始尺寸（不解码整图，靠 header）
@@ -109,16 +109,16 @@ fn is_screenshot(path: &Path, w: i64, h: i64, has_cam: bool) -> i64 {
 // ---------------------------------------------------------------- phash
 
 /// 32×32 灰度 DCT-II，取左上 8×8 低频（去掉 DC），对比度归一化后压成 64 bit
-pub fn phash(rgb: &[u8], w: u32, h: u32) -> String {
+pub fn phash(rgb: &[u8], w: usize, h: usize) -> String {
     const N: usize = 32;
     let mut g = vec![0f32; N * N];
     for y in 0..N {
         for x in 0..N {
             let sx = (x as f32 * w as f32 / N as f32) as usize;
             let sy = (y as f32 * h as f32 / N as f32) as usize;
-            let sx = sx.min(w as usize - 1);
-            let sy = sy.min(h as usize - 1);
-            let i = (sy * w as usize + sx) * 3;
+            let sx = sx.min(w - 1);
+            let sy = sy.min(h - 1);
+            let i = (sy * w + sx) * 3;
             g[y * N + x] = 0.299 * rgb[i] as f32 + 0.587 * rgb[i + 1] as f32 + 0.114 * rgb[i + 2] as f32;
         }
     }

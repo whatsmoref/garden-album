@@ -237,7 +237,7 @@ fn parse_ifd(r: &Reader, tiff: &[u8], ifd_off: usize) -> Result<(Vec<(u16, Val)>
         out.push((tag, v));
     }
     if ifd_off + 2 + n * 12 + 4 <= tiff.len() {
-        next = r.u32(ifd_off + 2 + n * 12).ok();
+        next = r.u32(ifd_off + 2 + n * 12).ok().map(|v| v as usize);
     }
     Ok((out, next))
 }

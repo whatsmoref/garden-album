@@ -193,10 +193,10 @@ impl Indexer {
         self.db.update_photo(
             pid,
             &[
-                ("known_face_count", 0.into()),
-                ("unknown_face_count", 0.into()),
+                ("known_face_count", rusqlite::types::Value::Integer(0)),
+                ("unknown_face_count", rusqlite::types::Value::Integer(0)),
                 ("avg_smile", rusqlite::types::Value::Null),
-                ("has_closed_eyes", 0.into()),
+                ("has_closed_eyes", rusqlite::types::Value::Integer(0)),
                 ("best_face_area", rusqlite::types::Value::Null),
             ],
         )?;
@@ -225,11 +225,11 @@ impl Indexer {
             self.db.update_photo(
                 pid,
                 &[
-                    ("known_face_count", known.into()),
-                    ("unknown_face_count", (n - known).into()),
+                    ("known_face_count", rusqlite::types::Value::Integer(known)),
+                    ("unknown_face_count", rusqlite::types::Value::Integer(n - known)),
                     ("avg_smile", rusqlite::types::Value::Null),
-                    ("has_closed_eyes", i64::from(closed).into()),
-                    ("best_face_area", best_area.into()),
+                    ("has_closed_eyes", rusqlite::types::Value::Integer(i64::from(closed))),
+                    ("best_face_area", rusqlite::types::Value::Real(best_area)),
                 ],
             )?;
         }
