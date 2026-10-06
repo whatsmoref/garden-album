@@ -7,9 +7,10 @@ on:
 
 jobs:
   linux:
-    # 必须用 24.04：ort 下载的预编译 ONNX Runtime 是针对 glibc 2.39 链接的，
-    # 在 22.04（glibc 2.35）会出现 __isoc23_strtol / _M_replace_cold 未定义符号
-    runs-on: ubuntu-24.04
+    # 用 22.04 + 自建 ORT：预编译的 libonnxruntime.so 链的是 glibc 2.39，
+    # 在 22.04（2.35）跑不起来，且换新 glibc 的 ld.so 会引出 __tunable_is_initialized 冲突。
+    # 正确做法是在 22.04 上从源码编译 ONNX Runtime（API 1.17+，静态链进二进制）。
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -17,17 +18,43 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Cache ONNX Runtime build
+        id: ort-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ort-install
+          key: ort-1.22.0-x64-linux-22.04
+      - name: Build ONNX Runtime from source (glibc 2.35 compatible)
+        if: steps.ort-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd /tmp
+          git clone --depth 1 -b v1.22.0 --recursive https://github.com/microsoft/onnxruntime.git
+          cd onnxruntime
+          ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
+            --compile_no_warning_as_error --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
+                                       ORT_LIB_LOCATION=/tmp/ort-install/lib
+          mkdir -p /tmp/ort-install
+          cp -r build/Linux/Release/onnxruntime /tmp/ort-install/
+          cp include /tmp/ort-install/ 2>/dev/null || true
+      - name: Point ort at the local ORT
+        run: |
+          echo "ORT_LIB_LOCATION=/tmp/ort-install/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/tmp/ort-install/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "ORT_DYLIB_PATH=/tmp/ort-install/lib/libonnxruntime.so" >> "$GITHUB_ENV"
       - name: Build release
         run: cargo build --release
+        env:
+          ORT_LIB_LOCATION: /tmp/ort-install/lib
       - name: Package
         run: |
           mkdir -p dist
           cp target/release/album dist/album
           # ort 的 copy-dylibs 会把 libonnxruntime.so 放进 target/release/
-          find target/release -name 'libonnxruntime*.so*' -exec cp -P {} dist/ \;
-          # 把运行时依赖一并打进去，便于本地直接跑
+          # 静态链入的 ORT 不需要额外 .so；只记录依赖便于排查
           ldd dist/album | awk '/=> \//{print $3}' | sort -u > dist/ldd.txt || true
-          while read -r lib; do [ -f "$lib" ] && cp -n -P "$lib" dist/; done < dist/ldd.txt
+          echo "--- 需要 GLIBC_2.xx ---"
+          objdump -T dist/album | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
           ls -la dist
       - uses: actions/upload-artifact@v4
         with:
@@ -36,7 +63,7 @@ jobs:
           retention-days: 30
 
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
