@@ -20,7 +20,7 @@ pub mod visual;
 pub mod vocab;
 
 /// 标签 + 文件名 → FTS 文档
-pub fn tags_of_doc(tags: &[(String, f32)], stem: &str) -> String {
+pub fn tags_of_doc(tags: &[(String, f64)], stem: &str) -> String {
     let mut s: Vec<&str> = tags.iter().map(|(t, _)| t.as_str()).collect();
     s.push(stem);
     s.join(" ")

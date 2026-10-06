@@ -162,7 +162,7 @@ impl Indexer {
             // 阶段 2：串行落库（faces/persons/albums 有顺序依赖）
             for (path, pre) in pre {
                 match self.persist(&path, pre) {
-                    Ok(Some(pid)) => {
+                    Ok(Some(_pid)) => {
                         done += 1;
                         println!("  ✓ {}", path.file_name().unwrap_or_default().to_string_lossy());
                     }

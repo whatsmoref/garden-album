@@ -435,9 +435,10 @@ impl Det {
         } else {
             (S, S)
         };
-        let prob = &data[..(ow * oh).min(data.len())];
+        // data 借用了 outs，必须先拷出来再放锁
+        let prob = data[..(ow * oh).min(data.len())].to_vec();
         drop(sess);
-        Ok(unclip_boxes(prob, ow, oh, w, h, thresh, box_thresh))
+        Ok(unclip_boxes(&prob, ow, oh, w, h, thresh, box_thresh))
     }
 }
 

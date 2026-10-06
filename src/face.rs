@@ -227,14 +227,12 @@ fn estimate_similarity(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> Option<[f32;
         let mut num1 = 0.0f32;
         let mut num2 = 0.0f32;
         let mut den1 = 0.0f32;
-        let mut den2 = 0.0f32;
         for i in 0..5 {
             let (px, py) = (src[i][0] - scx, src[i][1] - scy);
             let (qx, qy) = (dst[i][0] - dcx, dst[i][1] - dcy);
             num1 += px * qx + py * qy;
             num2 += py * qx - px * qy;
             den1 += px * px + py * py;
-            den2 += den1;
         }
         if den1 < 1e-6 {
             break;
