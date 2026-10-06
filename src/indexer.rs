@@ -135,13 +135,29 @@ impl Indexer {
             self.db.begin()?;
             // 阶段 1：解码 + CLIP + NIMA（纯计算，可并行）
             // 注意：rusqlite 的 Connection 不是 Sync，去重必须在进 rayon 之前串行做完
-            let todo: Vec<&PathBuf> = chunk
+            let todo: Vec<PathBuf> = chunk
                 .iter()
                 .filter(|p| self.db.photo_id(&p.to_string_lossy()).ok().flatten().is_none())
+                .cloned()
                 .collect();
+            // rayon 只捕获 &self.visual（无 DB，无 RefCell）
+            let visual = &self.visual;
             let pre: Vec<(PathBuf, PreResult)> = todo
                 .par_iter()
-                .filter_map(|p| self.prepare(p).ok().map(|r| ((*p).clone(), r)))
+                .filter_map(|p| {
+                    let meta = extract_metadata(p).ok()?;
+                    let (rgb, w, h) = load_image_rgb(p, 1024).ok()?;
+                    let vec = visual.embed(&rgb, w, h).ok()?;
+                    let tags = visual.top_tags(&vec, 8, None);
+                    let q = visual.quality(&rgb, w, h).ok()?;
+                    Some((
+                        p.clone(),
+                        PreResult {
+                            meta, vec, tags, quality: q, rgb, w, h,
+                            stem: p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                        },
+                    ))
+                })
                 .collect();
             // 阶段 2：串行落库（faces/persons/albums 有顺序依赖）
             for (path, pre) in pre {
@@ -157,28 +173,6 @@ impl Indexer {
             self.db.commit()?;
         }
         Ok(done)
-    }
-
-    /// 纯计算：不碰 DB（rusqlite 的 Connection 不是 Sync，rayon 里用不了）
-    fn prepare(&self, path: &Path) -> Result<PreResult> {
-        let meta = extract_metadata(path)?;
-        let (rgb, w, h) = load_image_rgb(path, 1024)?;
-        let vec = self.visual.embed(&rgb, w, h)?;
-        let tags = self.visual.top_tags(&vec, 8, None);
-        let q = self.visual.quality(&rgb, w, h)?;
-        Ok(PreResult {
-            meta,
-            vec,
-            tags,
-            quality: q,
-            rgb,
-            w,
-            h,
-            stem: path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        })
     }
 
     /// 阶段 2：落库 + 人脸 + OCR + 相册

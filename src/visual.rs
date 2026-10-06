@@ -37,7 +37,7 @@ impl VisualAnalyzer {
     }
 
     /// 零样本标签，取分数超过阈值的 top-k
-    pub fn top_tags(&self, vec: &[f32], k: usize, thresh: Option<f32>) -> Vec<(String, f32)> {
+    pub fn top_tags(&self, vec: &[f32], k: usize, thresh: Option<f32>) -> Vec<(String, f64)> {
         let thresh = thresh.unwrap_or(C::TAG_THRESH);
         let mut sims: Vec<(usize, f32)> = self
             .tag_mat
@@ -55,7 +55,7 @@ impl VisualAnalyzer {
         sims.into_iter()
             .take(k)
             .filter(|(_, s)| *s > thresh)
-            .map(|(i, s)| (self.tag_names[i].clone(), (s * 1000.0).round() / 1000.0))
+            .map(|(i, s)| (self.tag_names[i].clone(), ((s as f64) * 1000.0).round() / 1000.0))
             .collect()
     }
 

@@ -12,9 +12,7 @@ use crate::exif;
 
 /// 高速解码：返回 RGB u8 的 HWC 缓冲（不含 stride 填充）
 pub fn load_image_rgb(path: &Path, max_side: u32) -> Result<(Vec<u8>, usize, usize)> {
-    let img = ImageReader::open(path)
-        .with_guessed_format()?
-        .decode()?;
+    let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
     // image crate 的 DynamicImage 已按 EXIF 方向处理过（JPEG 的 orientation）
     let rgb = img.to_rgb8();
     let (w0, h0) = rgb.dimensions();
