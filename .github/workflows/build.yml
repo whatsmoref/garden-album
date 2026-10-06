@@ -35,10 +35,10 @@ jobs:
           git clone --depth 1 -b v1.22.0 --recursive https://github.com/microsoft/onnxruntime.git
           cd onnxruntime
           ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
-            --update --compile_no_warning_as_error --use_openmp \
+            --update --compile_no_warning_as_error \
             --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
-            --cmake_generator Ninja \
-            ORT_LIB_LOCATION=/tmp/ort-install/lib
+                                       onnxruntime_USE_OPENMP=OFF \
+                                       ORT_LIB_LOCATION=/tmp/ort-install/lib
           mkdir -p /tmp/ort-install
           cp -r build/Linux/Release/onnxruntime /tmp/ort-install/
           cp include /tmp/ort-install/ 2>/dev/null || true
@@ -75,5 +75,19 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install ONNX Runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libonnxruntime-dev 2>/dev/null || {
+            echo "apt 没有 libonnxruntime-dev，改用 python wheel 里的 .so"
+            pip download onnxruntime==1.22.0 -d /tmp/ortwhl --no-deps -q
+            mkdir -p /opt/ort && cd /tmp/ortwhl && python3 -c "
+import zipfile,glob,os
+w=glob.glob('*.whl')[0]
+zipfile.ZipFile(w).extractall('/opt/ort')
+"
+            find /opt/ort -name 'libonnxruntime.so*' -exec cp -P {} /usr/local/lib/ \;
+            ldconfig
+          }
       - name: cargo test
         run: cargo test --release
