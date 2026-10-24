@@ -50,12 +50,16 @@ cargo run --release --manifest-path album-gui/src-tauri/Cargo.toml
 
 ## 下载安装包（开箱即用）
 
-GitHub Releases 提供两个平台的自包含安装包（无需装 Python、无需手动下载模型，首次启动即可用）：
+**[Releases 页面](https://github.com/whatsmoref/garden-album/releases)** 提供两个平台的自包含安装包
+（无需装 Python、无需手动下载模型，首次启动即可用）：
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Linux x86_64 | `garden-album_*_amd64.deb` | Ubuntu 22.04+ / Debian 12+，`sudo apt install ./xxx.deb` |
-| macOS Apple Silicon | `garden-album_*_arm64.dmg` | macOS 11+，arm64（M 系列）；未做 Apple 公证 |
+| Linux x86_64 | `garden-album_0.1.0_amd64.deb`（约 525MB） | Ubuntu 22.04+ / Debian 12+，`sudo apt install ./xxx.deb` |
+| macOS Apple Silicon | `garden-album_0.1.0_arm64.dmg`（约 431MB） | macOS 11+，arm64（M 系列）；未做 Apple 公证 |
+
+模型权重另外托管在同仓库的 [`models-v1` Release](https://github.com/whatsmoref/garden-album/releases/tag/models-v1)，
+CI 优先从该 Release 取模型（失败再回退 Hugging Face），并用 actions/cache 缓存。
 
 安装包内置可移植 CPython 3.11、全部 Python 依赖和模型，安装后约 1.1GB。后端随应用启动，
 数据仍只写本地（Linux `~/.local/share/dev.garden.album/library/`，macOS `~/Library/Application Support/dev.garden.album/library/`）。
@@ -81,6 +85,7 @@ npm run build:dmg                      # macOS arm64 → .../bundle/dmg/*.dmg
 安装包把后端整体放进 Tauri resources（macOS `Contents/Resources/backend`、Linux `/usr/lib/Garden Album/backend`）；
 `main.rs` 优先用 `resource_dir()/backend` 里的自带 Python，找不到才回退开发工程的 `.venv`。
 CI 定义在 `.github/workflows/build-release.yml`：Actions 里手动 Run workflow，或推 `v*` tag 自动构建并上传 Release。
+`.github/workflows/publish-models.yml` 用于把模型重新发布到 `models-v1` Release（资产名 = 相对路径里的 `/` 换成 `_`）。
 
 ## 首次使用（面向用户）
 
