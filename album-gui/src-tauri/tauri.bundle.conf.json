@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "pkg/backend/": "backend/"
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

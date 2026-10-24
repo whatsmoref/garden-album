@@ -23,6 +23,26 @@ fn api_base(state: State<'_, Backend>) -> String {
 /// 原生文件夹选择器；取消时返回 None。
 #[tauri::command]
 fn pick_folder() -> Result<Option<String>, String> {
+    pick_folder_impl()
+}
+
+#[cfg(target_os = "macos")]
+fn pick_folder_impl() -> Result<Option<String>, String> {
+    // macOS 没有 zenity，用系统自带的 osascript 弹原生选择框
+    let script = r#"POSIX path of (choose folder with prompt "选择照片文件夹")"#;
+    let out = Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .map_err(|e| format!("调用 osascript 失败：{e}"))?;
+    if !out.status.success() {
+        return Ok(None); // 用户取消时 osascript 返回非 0
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if path.is_empty() { None } else { Some(path) })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pick_folder_impl() -> Result<Option<String>, String> {
     let out = Command::new("zenity")
         .args(["--file-selection", "--directory", "--title=选择照片文件夹"])
         .output()
@@ -34,6 +54,33 @@ fn pick_folder() -> Result<Option<String>, String> {
     Ok(if path.is_empty() { None } else { Some(path) })
 }
 
+/// 后端所在目录：
+/// - 安装包模式：`resource_dir()/backend`（packaging/build_backend.sh 生成的自包含后端）
+/// - 开发模式：向上找含 `src/server.py` 的工程根
+fn backend_root(app: &tauri::App) -> Result<std::path::PathBuf, String> {
+    if let Ok(res) = app.path().resource_dir() {
+        let cand = res.join("backend");
+        if cand.join("src/server.py").is_file() {
+            return Ok(cand);
+        }
+    }
+    find_project_root()
+        .ok_or_else(|| "找不到后端：安装包内没有 backend 资源，也不在开发工程树内".to_string())
+}
+
+/// 后端解释器：包内自带 Python → 开发用 .venv → 系统 python3
+fn backend_python(root: &std::path::Path) -> std::path::PathBuf {
+    let bundled = root.join("python/bin/python3");
+    if bundled.is_file() {
+        return bundled;
+    }
+    let venv = root.join(".venv/bin/python");
+    if venv.is_file() {
+        return venv;
+    }
+    "python3".into()
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -41,12 +88,8 @@ fn main() {
             let data_dir = root.join("library");
             let _ = std::fs::create_dir_all(&data_dir);
 
-            // 从可执行文件所在位置往上找工程根（含 src/server.py 的那一层）
-            let project = find_project_root()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-            let python = project.join(".venv/bin/python");
-            let python = if python.exists() { python } else { "python3".into() };
+            let project = backend_root(app)?;
+            let python = backend_python(&project);
 
             let mut child = Command::new(&python)
                 .current_dir(&project)
@@ -108,14 +151,20 @@ fn main() {
         });
 }
 
-/// 向上找同时含 `src/server.py` 和 `models/` 的目录。
+/// 向上找含 `src/server.py` 的目录；优先返回同时含 `models/` 的那一层。
 fn find_project_root() -> Option<std::path::PathBuf> {
     let mut dir = std::env::current_exe().ok()?;
+    let mut fallback = None;
     for _ in 0..8 {
-        if dir.join("src/server.py").exists() && dir.join("models").is_dir() {
-            return Some(dir);
+        if dir.join("src/server.py").exists() {
+            if dir.join("models").is_dir() {
+                return Some(dir);
+            }
+            if fallback.is_none() {
+                fallback = Some(dir.clone());
+            }
         }
         dir = dir.parent()?.to_path_buf();
     }
-    None
+    fallback
 }

@@ -97,10 +97,18 @@ def make_session(path):
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     return ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
 def load_tflite(path):
+    """加载 LiteRT/TFLite 解释器：tflite_runtime → ai-edge-litert → tensorflow。
+
+    打包版统一用 ai-edge-litert（macOS arm64 没有 tflite-runtime wheel），
+    三个后端的 Interpreter API 兼容，NIMA 打分结果一致（见 README 实测）。
+    """
     try:
         from tflite_runtime.interpreter import Interpreter
     except ImportError:
-        from tensorflow.lite import Interpreter
+        try:
+            from ai_edge_litert.interpreter import Interpreter
+        except ImportError:
+            from tensorflow.lite import Interpreter
     it = Interpreter(model_path=str(path), num_threads=C.ORT_THREADS)
     it.allocate_tensors()
     return it

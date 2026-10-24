@@ -1,0 +1,170 @@
+name: build-release
+
+# 手动触发，或推 v* tag 时自动构建并发布。
+# 产物：
+#   - Linux x86_64: .deb（内置可移植 Python 后端 + 模型，开箱即用）
+#   - macOS arm64 : .dmg（同上；ad-hoc 签名，未做 Apple 公证）
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # 打包脚本共用的缓存目录（可移植 Python 压缩包 / pip wheel / HF 模型）
+  GARDEN_CACHE_DIR: ${{ github.workspace }}/.cache/ci
+
+jobs:
+  linux-deb:
+    name: Linux deb (x86_64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装系统依赖（Tauri v2 需要 webkit2gtk-4.1）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev \
+            libssl-dev file
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: album-gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: album-gui/src-tauri -> target
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ github.workspace }}/.cache/ci
+            ~/.cache/huggingface
+          key: backend-${{ runner.os }}-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
+          restore-keys: |
+            backend-${{ runner.os }}-
+
+      - name: 组装自包含后端（可移植 Python + 依赖 + HF 模型）
+        run: bash packaging/build_backend.sh
+
+      - name: 安装前端工具链
+        run: npm ci --prefix album-gui --no-audit --no-fund
+
+      - name: 构建 deb
+        working-directory: album-gui
+        run: npx tauri build --bundles deb --config src-tauri/tauri.bundle.conf.json
+
+      - name: 收集产物
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp album-gui/src-tauri/target/release/bundle/deb/*.deb dist/garden-album_${GITHUB_REF_NAME//\//_}_amd64.deb
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garden-album-linux-deb
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传到 Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          draft: false
+          fail_on_unmatched_files: true
+
+  macos-dmg:
+    name: macOS dmg (Apple Silicon)
+    runs-on: macos-14
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: album-gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: album-gui/src-tauri -> target
+          key: macos-arm64
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/pip
+            ~/.cache/pip
+            ${{ github.workspace }}/.cache/ci
+            ~/.cache/huggingface
+          key: backend-${{ runner.os }}-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
+          restore-keys: |
+            backend-${{ runner.os }}-
+
+      - name: 组装自包含后端（可移植 Python + 依赖 + HF 模型）
+        run: bash packaging/build_backend.sh
+
+      - name: 给包内 Python/动态库做 ad-hoc 签名（Apple Silicon 运行要求）
+        run: |
+          set -euo pipefail
+          ROOT="album-gui/src-tauri/pkg/backend"
+          count=0
+          while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q 'Mach-O'; then
+              codesign --force --sign - "$f" >/dev/null 2>&1 || true
+              count=$((count+1))
+            fi
+          done < <(find "$ROOT" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0)
+          echo "ad-hoc signed: $count files"
+
+      - name: 安装前端工具链
+        run: npm ci --prefix album-gui --no-audit --no-fund
+
+      - name: 构建 dmg
+        working-directory: album-gui
+        run: npx tauri build --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.bundle.conf.json
+
+      - name: 收集产物
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp album-gui/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg dist/garden-album_${GITHUB_REF_NAME//\//_}_arm64.dmg
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garden-album-macos-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传到 Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          draft: false
+          fail_on_unmatched_files: true

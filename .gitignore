@@ -24,3 +24,13 @@ album-gui/node_modules/
 # 杂项
 *.log
 .DS_Store
+
+# 打包 / 本地环境
+/album-gui/src-tauri/pkg/
+/.venv311/
+/.modelcheck/
+/.cache/
+*.deb
+*.dmg
+.packaging-build.log
+.tauri-deb-build.log

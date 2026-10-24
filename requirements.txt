@@ -1,17 +1,23 @@
-# 核心（必需）
-numpy==1.26.4              # tflite-runtime / onnxruntime 均按 1.x ABI 构建，不要升 2.x
-opencv-python-headless>=4.9
-Pillow>=10
-onnxruntime>=1.17         # CPUExecutionProvider
-tflite-runtime>=2.14       # NIMA 质量分；无 wheel 时换 ai-edge-litert
-ImageHash>=4.3             # phash；注意 4.3.2 在 Linux 装的是小写 imagehash 目录
-scipy>=1.11                # ImageHash 依赖
-tokenizers>=0.15          # MobileCLIP2 tokenizer.json
-jieba>=0.42                # 查询解析兜底分词
-pyclipper, shapely, six    # rapidocr 依赖
+# Garden 相册后端依赖（打包与开发共用；Python 3.11）
+# 注意：rapidocr-onnxruntime 请用 `pip install --no-deps` 安装，见 README，
+# 否则会拉进全量 opencv-python 与 headless 版冲突。
 
-# OCR（定向票据识别）
-rapidocr-onnxruntime>=1.3 # 自带 onnxruntime/opencv，装时建议 --no-deps 避免拉全量 opencv
+# 核心（必需）
+numpy==1.26.4              # 1.x ABI：onnxruntime / LiteRT 均按此构建，不要升 2.x
+opencv-python-headless>=4.9,<5
+Pillow>=10,<13
+onnxruntime>=1.17,<1.25    # CPUExecutionProvider
+ai-edge-litert>=2.1,<3     # NIMA 质量分（Google LiteRT，macOS arm64 有 wheel）
+ImageHash>=4.3             # phash；4.3.2 在 Linux 装的是小写 imagehash 目录
+scipy>=1.11
+tokenizers>=0.15,<0.22     # MobileCLIP2 tokenizer.json
+jieba>=0.42
+
+# rapidocr-onnxruntime 的依赖（本体用 --no-deps 单独装）
+pyclipper>=1.3
+shapely>=2.0
+six>=1.16
+PyYAML>=6
 
 # 微笑分（可选，不装则 avg_smile 恒为 0，"笑得自然"类筛选失效）
 # hsemotion-onnx

@@ -12,7 +12,7 @@ Tauri 桌面前端（`album-gui/`，纯 HTML/CSS/JS，无构建步骤）提供 m
 
 | 路径 | 内容 | 说明 |
 |---|---|---|
-| `models/` | 模型权重（约 348MB） | MobileCLIP2-S0、SCRFD/ArcFace、NIMA、RapidOCR/PP-OCR |
+| `models/` | 模型权重（约 365MB） | MobileCLIP2-S0、SCRFD/ArcFace、NIMA、RapidOCR/PP-OCR；**安装包内置**，源码仓库不含，用 `tools/fetch_models.py` 下载（SHA256 校验） |
 | `testphotos/`、`testphotos_raw/` | 开发测试图（约 70MB） | pixnio 抓取的第三方图片 + 4 张真实票据，不随仓库分发 |
 | `data/` | 开发库快照 | `album.db` / `vectors.npz`；应用默认使用系统数据目录 |
 | `bin/` | 旧 Rust 版二进制与 ONNX Runtime 动态库 | 与当前 Python 流程无关，未入库 |
@@ -24,8 +24,11 @@ Tauri 桌面前端（`album-gui/`，纯 HTML/CSS/JS，无构建步骤）提供 m
 ## 环境
 
 ```bash
-python3 -m venv .venv
+python3 -m venv .venv                      # 3.10+ 均可；安装包统一用 3.11
 ./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m pip install --no-deps rapidocr-onnxruntime   # 避免拉全量 opencv
+python3 -m pip install huggingface_hub     # 仅下载模型需要
+python3 tools/fetch_models.py              # 取模型 → ./models（约 280MB，SHA256 校验）
 ```
 
 实测依赖：`numpy==1.26.4`（tflite-runtime 按 1.x ABI 构建）、`onnxruntime`、
@@ -44,6 +47,40 @@ GARDEN_DATA_DIR=/path/to/library ./.venv/bin/python -m src.server --port 8899
 # 桌面应用（Tauri 会自动拉起内置后端；Linux 需 libwebkit2gtk-4.1-dev / libgtk-3-dev / librsvg2-dev）
 cargo run --release --manifest-path album-gui/src-tauri/Cargo.toml
 ```
+
+## 下载安装包（开箱即用）
+
+GitHub Releases 提供两个平台的自包含安装包（无需装 Python、无需手动下载模型，首次启动即可用）：
+
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Linux x86_64 | `garden-album_*_amd64.deb` | Ubuntu 22.04+ / Debian 12+，`sudo apt install ./xxx.deb` |
+| macOS Apple Silicon | `garden-album_*_arm64.dmg` | macOS 11+，arm64（M 系列）；未做 Apple 公证 |
+
+安装包内置可移植 CPython 3.11、全部 Python 依赖和模型，安装后约 1.1GB。后端随应用启动，
+数据仍只写本地（Linux `~/.local/share/dev.garden.album/library/`，macOS `~/Library/Application Support/dev.garden.album/library/`）。
+
+macOS 首次打开会被 Gatekeeper 拦（没有付费 Apple 开发者证书，只做了 ad-hoc 签名）：
+在 Finder 里 **右键 → 打开**，或执行
+`xattr -dr com.apple.quarantine "/Applications/Garden Album.app"`。
+
+模型版权与许可归各自上游（见 `tools/fetch_models.py` 里的 HF 仓库清单），
+打包内置仅为个人/研究场景的方便；商用请自行确认许可或替换模型。
+
+## 从源码构建安装包
+
+```bash
+python3 tools/fetch_models.py          # 1) 取模型（约 280MB；国内可 HF_ENDPOINT=https://hf-mirror.com）
+bash packaging/build_backend.sh        # 2) 可移植 Python + 依赖 + src + models → album-gui/src-tauri/pkg/backend
+cd album-gui
+npm ci
+npm run build:deb                      # Linux → src-tauri/target/release/bundle/deb/*.deb
+npm run build:dmg                      # macOS arm64 → .../bundle/dmg/*.dmg
+```
+
+安装包把后端整体放进 Tauri resources（macOS `Contents/Resources/backend`、Linux `/usr/lib/Garden Album/backend`）；
+`main.rs` 优先用 `resource_dir()/backend` 里的自带 Python，找不到才回退开发工程的 `.venv`。
+CI 定义在 `.github/workflows/build-release.yml`：Actions 里手动 Run workflow，或推 `v*` tag 自动构建并上传 Release。
 
 ## 首次使用（面向用户）
 
@@ -197,7 +234,9 @@ Garden/
 ├── album-gui/
 │   ├── src-tauri/        # Tauri 壳（Rust）：拉起内置后端、原生文件夹选择器
 │   └── ui/               # 前端：index.html / style.css / app.js（无构建步骤）
-├── tools/                # ui_regression.py：headless Firefox 真实 UI 回归
+├── tools/                # ui_regression.py + fetch_models.py（从 HF 下载并校验模型）
+├── packaging/            # build_backend.sh：组装安装包内置的可移植 Python 后端
+├── .github/workflows/    # build-release.yml：CI 构建 deb / dmg
 ├── models/               # 模型权重（未入库，见上）
 ├── testphotos/           # 开发测试库（未入库）
 ├── testphotos_raw/       # 开发素材原图（未入库）
