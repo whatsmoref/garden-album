@@ -1,4 +1,26 @@
-/target
-*.npy
-*.npz
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 本地模型 / 数据库 / 测试素材（体积与第三方许可原因，见 README「仓库内容」）
+/models/
 /data/
+/testphotos/
+/testphotos_raw/
+/bin/
+
+# Tauri / Rust 构建产物
+album-gui/src-tauri/target/
+album-gui/src-tauri/gen/
+album-gui/node_modules/
+
+# 本机运行信息 / 回归临时目录
+/.app-run/
+/.uitest/
+/.push-tmp/
+
+# 杂项
+*.log
+.DS_Store

@@ -1,0 +1,23 @@
+# 核心（必需）
+numpy==1.26.4              # tflite-runtime / onnxruntime 均按 1.x ABI 构建，不要升 2.x
+opencv-python-headless>=4.9
+Pillow>=10
+onnxruntime>=1.17         # CPUExecutionProvider
+tflite-runtime>=2.14       # NIMA 质量分；无 wheel 时换 ai-edge-litert
+ImageHash>=4.3             # phash；注意 4.3.2 在 Linux 装的是小写 imagehash 目录
+scipy>=1.11                # ImageHash 依赖
+tokenizers>=0.15          # MobileCLIP2 tokenizer.json
+jieba>=0.42                # 查询解析兜底分词
+pyclipper, shapely, six    # rapidocr 依赖
+
+# OCR（定向票据识别）
+rapidocr-onnxruntime>=1.3 # 自带 onnxruntime/opencv，装时建议 --no-deps 避免拉全量 opencv
+
+# 微笑分（可选，不装则 avg_smile 恒为 0，"笑得自然"类筛选失效）
+# hsemotion-onnx
+
+# 可选
+# pyvips                # 高速解码，需系统 libvips；不装走 PIL 兜底
+# watchdog              # 换掉 60s 轮询监听
+# reverse-geocoder      # 全球逆地理编码，替代 events.py 内置的国内城市表
+# sqlite-vec / zvec     # 万级以上换 ANN，替换 db.VectorStore 即可，接口已隔离

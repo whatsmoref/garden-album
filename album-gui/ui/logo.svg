@@ -1,0 +1,37 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0E1621"/>
+      <stop offset="1" stop-color="#26323E"/>
+    </linearGradient>
+    <clipPath id="photoClip">
+      <rect x="150" y="150" width="232" height="176" rx="36"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <circle cx="392" cy="112" r="128" fill="#D6B77B" opacity="0.07"/>
+  <circle cx="96" cy="420" r="160" fill="#5E7180" opacity="0.08"/>
+
+  <rect
+    x="132" y="172" width="236" height="176" rx="36"
+    fill="#F4EFE4" opacity="0.18"
+    transform="rotate(-7 250 260)"
+  />
+
+  <rect x="150" y="150" width="232" height="176" rx="36" fill="#F4EFE4"/>
+
+  <g clip-path="url(#photoClip)">
+    <circle cx="214" cy="206" r="17" fill="#D6B77B"/>
+    <path d="M150 326L220 252L262 294L298 258L382 342H150V326Z" fill="#5E7180" opacity="0.95"/>
+  </g>
+
+  <g transform="translate(330 96) rotate(10)">
+    <path
+      d="M0 20C0 8.954 8.954 0 20 0H72C83.046 0 92 8.954 92 20V52C92 63.046 83.046 72 72 72H38L18 92V72H20C8.954 72 0 63.046 0 52V20Z"
+      fill="#C96F4A"
+    />
+    <circle cx="22" cy="22" r="7" fill="#F4EFE4"/>
+  </g>
+</svg>
