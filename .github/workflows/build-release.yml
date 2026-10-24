@@ -19,8 +19,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  # 打包脚本共用的缓存目录（可移植 Python 压缩包 / pip wheel / HF 模型）
-  GARDEN_CACHE_DIR: ${{ github.workspace }}/.cache/ci
 
 jobs:
   linux-deb:
@@ -53,7 +51,8 @@ jobs:
         with:
           path: |
             ~/.cache/pip
-            ${{ github.workspace }}/.cache/ci
+            ~/Library/Caches/pip
+            ~/.cache/garden-album-packaging
             ~/.cache/huggingface
           key: backend-${{ runner.os }}-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
           restore-keys: |
@@ -72,8 +71,9 @@ jobs:
       - name: 收集产物
         run: |
           set -euo pipefail
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' album-gui/src-tauri/Cargo.toml | head -1)"
           mkdir -p dist
-          cp album-gui/src-tauri/target/release/bundle/deb/*.deb dist/garden-album_${GITHUB_REF_NAME//\//_}_amd64.deb
+          cp album-gui/src-tauri/target/release/bundle/deb/*.deb "dist/garden-album_${VERSION}_amd64.deb"
           ls -lh dist
 
       - uses: actions/upload-artifact@v4
@@ -150,8 +150,9 @@ jobs:
       - name: 收集产物
         run: |
           set -euo pipefail
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' album-gui/src-tauri/Cargo.toml | head -1)"
           mkdir -p dist
-          cp album-gui/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg dist/garden-album_${GITHUB_REF_NAME//\//_}_arm64.dmg
+          cp album-gui/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg "dist/garden-album_${VERSION}_arm64.dmg"
           ls -lh dist
 
       - uses: actions/upload-artifact@v4
