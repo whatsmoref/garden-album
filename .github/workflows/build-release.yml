@@ -19,6 +19,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  # 模型来源：先试本仓库 models-v1 Release 资产，取不到再回退 Hugging Face
+  GARDEN_MODELS_SOURCE: auto
+  GARDEN_MODELS_RELEASE_TAG: models-v1
+  GARDEN_MODELS_RELEASE_REPO: whatsmoref/garden-album
+  # gh release download 需要 token（公开仓库也走 API）
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   linux-deb:
@@ -53,8 +59,9 @@ jobs:
             ~/.cache/pip
             ~/Library/Caches/pip
             ~/.cache/garden-album-packaging
+            ~/.cache/garden-models
             ~/.cache/huggingface
-          key: backend-${{ runner.os }}-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
+          key: backend-${{ runner.os }}-models-v1-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
           restore-keys: |
             backend-${{ runner.os }}-
 
@@ -120,7 +127,7 @@ jobs:
             ~/.cache/pip
             ${{ github.workspace }}/.cache/ci
             ~/.cache/huggingface
-          key: backend-${{ runner.os }}-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
+          key: backend-${{ runner.os }}-models-v1-${{ hashFiles('requirements.txt', 'tools/fetch_models.py') }}
           restore-keys: |
             backend-${{ runner.os }}-
 

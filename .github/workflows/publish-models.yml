@@ -1,0 +1,61 @@
+name: publish-models
+
+# 一次性/可重复：把模型下载后作为 Release 资产发布到 models-v1，
+# 这样 build-release 的 CI 不必依赖 Hugging Face 上游是否可访问。
+# 资产名 = 模型相对路径里的 / 换成 _（与 tools/fetch_models.py 的 release 来源约定一致）。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布到哪个 Release tag
+        required: false
+        default: models-v1
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  publish:
+    name: fetch models → release assets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装取模型依赖
+        run: python -m pip install -q huggingface_hub
+
+      - name: 从 Hugging Face 下载并校验
+        run: python tools/fetch_models.py --dest build/models --source hf
+
+      - name: 扁平化资产名
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          cd build/models
+          find . -type f | sed 's|^\./||' | while IFS= read -r rel; do
+            asset="${rel//\//_}"
+            cp "$rel" "../../assets/$asset"
+          done
+          cd ../..
+          ls -lh assets
+
+      - name: 创建或复用 Release
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || 'models-v1' }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Models ${TAG#models-}" \
+              --notes "Garden 相册使用的模型权重（来源见 tools/fetch_models.py，逐文件 SHA256 校验）。"
+          fi
+          gh release upload "$TAG" assets/* --clobber
+          echo "=== 已发布 ==="
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size/1048576|floor) MB"'

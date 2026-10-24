@@ -17,7 +17,9 @@ OCR 模型直接复用 `rapidocr-onnxruntime` 包内自带的 PP-OCRv4 模型（
 import argparse
 import hashlib
 import importlib.util
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -79,10 +81,50 @@ def source_hint():
           "OCR 模型需要  pip install --no-deps rapidocr-onnxruntime", file=sys.stderr)
 
 
+# ── Release 资产来源（自托管，CI 优先用）────────────────────────────
+# 模型也可以托管在本仓库的 models-v1 Release 里：资产名 = 相对路径里的 / 换成 _。
+# 这样 CI 不依赖第三方仓库（HF）是否还在，且下载走 GitHub CDN。
+RELEASE_TAG = os.environ.get("GARDEN_MODELS_RELEASE_TAG", "models-v1")
+RELEASE_REPO = os.environ.get("GARDEN_MODELS_RELEASE_REPO", "whatsmoref/garden-album")
+RELEASE_CACHE = Path(os.environ.get(
+    "GARDEN_MODELS_CACHE", Path.home() / ".cache" / "garden-models"))
+
+
+def release_asset_name(rel):
+    return rel.replace("/", "_")
+
+
+def fetch_from_release(rel, digest):
+    """从 models-v1 Release 资产取模型；返回 True 表示已就位。"""
+    asset = release_asset_name(rel)
+    cache_dir = RELEASE_CACHE / RELEASE_TAG
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / asset
+    if not check_file(cached, digest):
+        if shutil.which("gh") is None:
+            return False
+        cmd = ["gh", "release", "download", RELEASE_TAG, "--repo", RELEASE_REPO,
+               "--pattern", asset, "--dir", str(cache_dir), "--clobber"]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[release] 拉取 {asset} 失败：{(r.stderr or r.stdout).strip()[:160]}")
+            return False
+    if not check_file(cached, digest):
+        print(f"[release] {asset} SHA256 不匹配")
+        return False
+    out = Path(rel)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(cached, out)
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description="下载 Garden 相册模型并校验 SHA256")
     ap.add_argument("--dest", default="models", help="模型输出目录（默认 ./models）")
     ap.add_argument("--check-only", action="store_true", help="只校验，不下载")
+    ap.add_argument("--source", default=os.environ.get("GARDEN_MODELS_SOURCE", "auto"),
+                    choices=["auto", "release", "hf"],
+                    help="auto=先试 Release 资产再回退 Hugging Face；release=只用 Release；hf=只用 HF")
     args = ap.parse_args()
     dest = Path(args.dest).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
@@ -96,6 +138,17 @@ def main():
         if args.check_only:
             failed.append(rel)
             continue
+
+        if args.source in ("auto", "release"):
+            print(f"[fetch] release:{RELEASE_TAG}/{release_asset_name(rel)} -> {rel}")
+            if fetch_from_release(rel, digest):
+                print(f"[ok]   {rel} ({out.stat().st_size / 1e6:.1f} MB)")
+                continue
+            if args.source == "release":
+                failed.append(rel)
+                print(f"[FAIL] Release 资产不可用：{rel}", file=sys.stderr)
+                continue
+
         from huggingface_hub import hf_hub_download
 
         print(f"[fetch] {repo}/{remote} -> {rel}")
