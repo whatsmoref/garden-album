@@ -94,8 +94,8 @@ def release_asset_name(rel):
     return rel.replace("/", "_")
 
 
-def fetch_from_release(rel, digest):
-    """从 models-v1 Release 资产取模型；返回 True 表示已就位。"""
+def fetch_from_release(dest, rel, digest):
+    """从 models-v1 Release 资产取模型；返回 True 表示已放到 dest/rel。"""
     asset = release_asset_name(rel)
     cache_dir = RELEASE_CACHE / RELEASE_TAG
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +112,7 @@ def fetch_from_release(rel, digest):
     if not check_file(cached, digest):
         print(f"[release] {asset} SHA256 不匹配")
         return False
-    out = Path(rel)
+    out = Path(dest) / rel
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(cached, out)
     return True
@@ -141,7 +141,12 @@ def main():
 
         if args.source in ("auto", "release"):
             print(f"[fetch] release:{RELEASE_TAG}/{release_asset_name(rel)} -> {rel}")
-            if fetch_from_release(rel, digest):
+            try:
+                fetched = fetch_from_release(dest, rel, digest)
+            except Exception as e:  # 网络/gh 异常时回退 HF
+                print(f"[release] 异常：{type(e).__name__}: {e}")
+                fetched = False
+            if fetched:
                 print(f"[ok]   {rel} ({out.stat().st_size / 1e6:.1f} MB)")
                 continue
             if args.source == "release":
