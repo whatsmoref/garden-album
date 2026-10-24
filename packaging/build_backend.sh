@@ -44,7 +44,7 @@ case "$UNAME_S/$UNAME_M" in
     PBS_ASSET="cpython-${PBS_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz"
     PBS_SHA="b5199d66966141fb6d5447512d2b2fe0398d417da37b1949f58db3792d314eac" ;;
   *)
-    echo "不支持的打包平台：$UNAME_S/$UNAME_M（仅 Linux x86_64 与 macOS arm64）" >&2
+    echo "不支持的打包平台：${UNAME_S}/${UNAME_M}（仅 Linux x86_64 与 macOS arm64）" >&2
     exit 1 ;;
 esac
 
@@ -62,7 +62,7 @@ if [[ ! -f "$TARBALL" ]] || [[ "$(sha256_file "$TARBALL")" != "$PBS_SHA" ]]; the
     "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${PBS_ASSET//+/%2B}"
   actual="$(sha256_file "$TARBALL.tmp")"
   if [[ "$actual" != "$PBS_SHA" ]]; then
-    echo "Python 运行时 SHA256 校验失败：期望 $PBS_SHA，实际 $actual" >&2
+    echo "Python 运行时 SHA256 校验失败：期望 ${PBS_SHA}，实际 ${actual}" >&2
     rm -f "$TARBALL.tmp"
     exit 1
   fi
@@ -151,4 +151,4 @@ PYCHECK
 )
 
 DUP="$(du -sh "$OUT" | cut -f1)"
-say "完成：$OUT（$DUP）"
+say "完成：${OUT}（${DUP}）"
