@@ -68,6 +68,11 @@ jobs:
       - name: 组装自包含后端（可移植 Python + 依赖 + HF 模型）
         run: bash packaging/build_backend.sh
 
+      - name: 冒烟测试打包后的后端（模型加载 + 建索引）
+        run: |
+          python3 -m pip install -q pillow
+          bash packaging/smoke_test.sh
+
       - name: 安装前端工具链
         run: npm ci --prefix album-gui --no-audit --no-fund
 
@@ -146,6 +151,11 @@ jobs:
             fi
           done < <(find "$ROOT" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0)
           echo "ad-hoc signed: $count files"
+
+      - name: 冒烟测试打包后的后端（模型加载 + 建索引）
+        run: |
+          python3 -m pip install -q --break-system-packages pillow || python3 -m pip install -q pillow
+          bash packaging/smoke_test.sh
 
       - name: 安装前端工具链
         run: npm ci --prefix album-gui --no-audit --no-fund

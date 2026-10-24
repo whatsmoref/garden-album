@@ -55,8 +55,8 @@ cargo run --release --manifest-path album-gui/src-tauri/Cargo.toml
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Linux x86_64 | `garden-album_0.1.0_amd64.deb`（约 525MB） | Ubuntu 22.04+ / Debian 12+，`sudo apt install ./xxx.deb` |
-| macOS Apple Silicon | `garden-album_0.1.0_arm64.dmg`（约 431MB） | macOS 11+，arm64（M 系列）；未做 Apple 公证 |
+| Linux x86_64 | `garden-album_0.1.1_amd64.deb`（约 525MB） | Ubuntu 22.04+ / Debian 12+，`sudo apt install ./xxx.deb` |
+| macOS Apple Silicon | `garden-album_0.1.1_arm64.dmg`（约 431MB） | macOS 11+，arm64（M 系列）；未做 Apple 公证 |
 
 模型权重另外托管在同仓库的 [`models-v1` Release](https://github.com/whatsmoref/garden-album/releases/tag/models-v1)，
 CI 优先从该 Release 取模型（失败再回退 Hugging Face），并用 actions/cache 缓存。

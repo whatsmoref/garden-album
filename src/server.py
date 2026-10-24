@@ -693,6 +693,7 @@ def _index_worker(folder, kind="index", album_id=None):
         from .events import recompute
         recompute(db())
         db().commit()
+        from .albums import AlbumEngine
         AlbumEngine(db(), hub()).rebuild_all()
         db().commit()
         bump_generation()
