@@ -82,6 +82,8 @@ npm run build:deb                      # Linux → src-tauri/target/release/bund
 npm run build:dmg                      # macOS arm64 → .../bundle/dmg/*.dmg
 ```
 
+`packaging/smoke_test.sh` 会用两张合成图对打包后的后端跑一遍 `/api/setup` 索引，
+校验 `phase=done` 与照片数——CI 两个平台都会执行，防止「打包能过、运行时报错」。
 安装包把后端整体放进 Tauri resources（macOS `Contents/Resources/backend`、Linux `/usr/lib/Garden Album/backend`）；
 `main.rs` 优先用 `resource_dir()/backend` 里的自带 Python，找不到才回退开发工程的 `.venv`。
 CI 定义在 `.github/workflows/build-release.yml`：Actions 里手动 Run workflow，或推 `v*` tag 自动构建并上传 Release。
@@ -240,7 +242,7 @@ Garden/
 │   ├── src-tauri/        # Tauri 壳（Rust）：拉起内置后端、原生文件夹选择器
 │   └── ui/               # 前端：index.html / style.css / app.js（无构建步骤）
 ├── tools/                # ui_regression.py + fetch_models.py（从 HF 下载并校验模型）
-├── packaging/            # build_backend.sh：组装安装包内置的可移植 Python 后端
+├── packaging/            # build_backend.sh / smoke_test.sh：组装后端 + 打包后冒烟测试
 ├── .github/workflows/    # build-release.yml：CI 构建 deb / dmg
 ├── models/               # 模型权重（未入库，见上）
 ├── testphotos/           # 开发测试库（未入库）
